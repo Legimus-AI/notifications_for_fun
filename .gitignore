@@ -69,5 +69,3 @@ typings/
 .env.production
 
 .history/
-
-dist
