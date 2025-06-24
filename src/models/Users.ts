@@ -49,7 +49,7 @@ const UserSchema = new Schema(
     urlTwitter: {
       type: String,
       validate: {
-        validator(v) {
+        validator: function (v: string) {
           return v === '' ? true : validator.isURL(v);
         },
         message: 'NOT_A_VALID_URL',
@@ -59,7 +59,7 @@ const UserSchema = new Schema(
     urlGitHub: {
       type: String,
       validate: {
-        validator(v) {
+        validator: function (v: string) {
           return v === '' ? true : validator.isURL(v);
         },
         message: 'NOT_A_VALID_URL',
@@ -76,14 +76,14 @@ const UserSchema = new Schema(
       default: Date.now,
       select: false,
     },
-  },
+  } as any,
   {
     versionKey: false,
     timestamps: true,
   },
 );
 
-const hash = (user, salt: string, next: () => void) => {
+const hash = (user: any, salt: string, next: () => void) => {
   bcrypt.hash(user.password, salt, (error, newHash) => {
     if (error) {
       console.log('🚀 Aqui *** -> error:', error);
@@ -94,7 +94,7 @@ const hash = (user, salt: string, next: () => void) => {
   });
 };
 
-const genSalt = (user, SALT_FACTOR: number, next: () => void) => {
+const genSalt = (user: any, SALT_FACTOR: number, next: () => void) => {
   bcrypt.genSalt(SALT_FACTOR, (err, salt) => {
     if (err) {
       console.log('🚀 Aqui *** -> err:', err);
@@ -112,7 +112,10 @@ UserSchema.pre('save', function (next) {
   return genSalt(this, SALT_FACTOR, next);
 });
 
-UserSchema.methods.comparePassword = function (passwordAttempt, cb) {
+UserSchema.methods.comparePassword = function (
+  passwordAttempt: string,
+  cb: (err: any, isMatch?: boolean) => void,
+) {
   bcrypt.compare(passwordAttempt, this.password, (err, isMatch) =>
     err ? cb(err) : cb(null, isMatch),
   );

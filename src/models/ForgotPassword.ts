@@ -37,7 +37,7 @@ const ForgotPasswordSchema = new Schema(
     countryChanged: {
       type: String,
     },
-  },
+  } as any,
   {
     versionKey: false,
     timestamps: true,

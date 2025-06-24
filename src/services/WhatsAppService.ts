@@ -4,11 +4,8 @@ import makeWASocket, {
   DisconnectReason,
   AuthenticationState,
   AuthenticationCreds,
-  SignalDataTypeMap,
   initAuthCreds,
-  proto,
   Browsers,
-  BaileysEventMap,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';

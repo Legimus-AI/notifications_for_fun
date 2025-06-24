@@ -24,7 +24,7 @@ const UserAccessSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-  },
+  } as any,
   {
     versionKey: false,
     timestamps: true,
