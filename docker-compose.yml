@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  rasita:
+    build: .
+    container_name: "my_node_app"
+    environment:
+      - PASSWORD_DB=${PASSWORD_DB}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - BUCKET_NAME=${BUCKET_NAME}
+      - DB_TOKEN=_4RJSKzq7Ni-TPTNJJ3T9HQqlTM6KCYtSaRAdqGl4fg=
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - PYTHON_ENV=production
+    ports:
+      - "80:5000"
+    links:
+      - duckling
+    depends_on:
+      - redis
