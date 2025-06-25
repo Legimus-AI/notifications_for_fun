@@ -28,34 +28,42 @@ const path_1 = __importDefault(require("path"));
 const http_1 = require("http");
 const SocketService_1 = require("./services/SocketService");
 const WhatsAppService_1 = require("./services/WhatsAppService");
+// =================================================================
+// ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
+// =================================================================
+// Catch unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    // Application specific logging, throwing an error, or other logic here
+    // It's often recommended to gracefully shut down in such cases
+});
+// Catch uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    // This is a critical error. The process is in an undefined state.
+    // It's not safe to continue. Perform synchronous cleanup and then shut down.
+    process.exit(1);
+});
 const app = (0, express_1.default)();
-// app.use((req: Request, res: Response, next: NextFunction) => {
-//   console.log("🐞 LOG HERE req:", req);
-//   // If there's an error in the request
-//   if (req.error) {
-//     return res.status(req.error.status || 422).json({ errors: req.error.array() });
-//   }
-//   // Other logic can be added here
-//   // Continue to the next middleware or route handler
-//   next();
-// });
 // Setup express server port from ENV, default: 3000
 app.set('port', process.env.PORT || 3000);
 app.get('/', (req, res) => {
     res.send('Hello World!');
 });
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        ok: true,
+        message: 'OK',
+        version: '1.0.0',
+    });
+});
 // Enable only in development HTTP request logger middleware
 if (process.env.NODE_ENV === 'development') {
     app.use((0, morgan_1.default)('dev'));
 }
-// for parsing json
-// app.use(
-//   bodyParser.json({
-//     limit: '100mb',
-//   }),
-// );
-app.use(express_1.default.json());
-// for parsing application/x-www-form-urlencoded
+// For parsing json
+app.use(express_1.default.json({ limit: '100mb' }));
+// For parsing application/x-www-form-urlencoded
 app.use(body_parser_1.default.urlencoded({
     limit: '100mb',
     extended: true,
@@ -74,14 +82,39 @@ app.use(passport_1.default.initialize());
 app.use((0, compression_1.default)());
 app.use((0, helmet_1.default)());
 app.use(express_1.default.static('public'));
+app.use('/storage', express_1.default.static(path_1.default.join(__dirname, '../storage')));
 app.set('views', path_1.default.join(__dirname, 'views'));
 app.set('view engine', 'html');
 // Create HTTP server
 const httpServer = (0, http_1.createServer)(app);
 // Initialize Socket.io service
 let socketService;
+// Load routes and then register error handlers
 (0, api_1.loadRoutes)().then((routes) => {
+    // Register API routes
     app.use('/api', routes);
+    // =================================================================
+    // ✨ NEW: Express Error Handling Middleware (must be after routes)
+    // =================================================================
+    // Handle 404 - Not Found
+    // This middleware is triggered when no other route matches
+    app.use((req, res, next) => {
+        const error = new Error('Not Found - The requested resource does not exist.');
+        error.status = 404;
+        next(error);
+    });
+    // Global Express Error Handler
+    // This middleware catches all errors passed by `next(error)`
+    app.use((err, req, res, next) => {
+        // Log the error for debugging purposes
+        console.error(err);
+        // Set a default status code if one isn't already set on the error
+        const statusCode = err.status || 500;
+        // Send a structured error response
+        res.status(statusCode).json({
+            error: Object.assign({ message: err.message || 'An unexpected internal server error occurred.' }, (process.env.NODE_ENV === 'development' && { stack: err.stack })),
+        });
+    });
 });
 const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -93,10 +126,6 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         console.log('🔄 Initializing Socket.io service...');
         exports.socketService = socketService = new SocketService_1.SocketService(httpServer);
         console.log('✅ Socket.io service initialized');
-        // Restore active WhatsApp channels
-        console.log('🔄 Restoring active WhatsApp channels...');
-        yield WhatsAppService_1.whatsAppService.restoreActiveChannels();
-        console.log('✅ WhatsApp channels restoration completed');
         // Start HTTP server
         const port = app.get('port');
         httpServer.listen(port, () => {
@@ -104,33 +133,10 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
             console.log(`📱 WhatsApp service ready`);
             console.log(`🔌 Socket.io server ready on ws://localhost:${port}/socket.io/`);
         });
-        // Graceful shutdown handling
-        const gracefulShutdown = (signal) => __awaiter(void 0, void 0, void 0, function* () {
-            console.log(`\n📥 Received ${signal}. Starting graceful shutdown...`);
-            try {
-                // Stop accepting new connections
-                httpServer.close(() => {
-                    console.log('🔌 HTTP server closed');
-                });
-                // Cleanup WhatsApp connections
-                yield WhatsAppService_1.whatsAppService.cleanup();
-                console.log('📱 WhatsApp service cleaned up');
-                // Cleanup Socket.io connections
-                if (socketService) {
-                    yield socketService.cleanup();
-                    console.log('🔌 Socket.io service cleaned up');
-                }
-                console.log('✅ Graceful shutdown completed');
-                process.exit(0);
-            }
-            catch (error) {
-                console.error('❌ Error during shutdown:', error);
-                process.exit(1);
-            }
-        });
-        // Handle shutdown signals
-        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+        // Restore active WhatsApp channels
+        console.log('🔄 Restoring active WhatsApp channels...');
+        yield WhatsAppService_1.whatsAppService.restoreActiveChannels();
+        console.log('✅ WhatsApp channels restoration completed');
     }
     catch (error) {
         console.error('❌ Failed to start server:', error);

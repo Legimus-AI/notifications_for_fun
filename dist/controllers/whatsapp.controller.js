@@ -40,6 +40,7 @@ const utils = __importStar(require("../helpers/utils"));
 const Channels_1 = __importDefault(require("../models/Channels"));
 const WhatsAppService_1 = require("../services/WhatsAppService");
 const mongoose_1 = __importDefault(require("mongoose"));
+const utils_1 = require("../helpers/utils");
 class WhatsAppController {
     constructor() {
         /**
@@ -395,6 +396,297 @@ class WhatsAppController {
                     ok: true,
                     message: 'Auth state cleared',
                     channelId,
+                });
+            }
+            catch (error) {
+                utils.handleError(res, error);
+            }
+        });
+        /**
+         * Sends a message through a specific channel.
+         * The payload should be similar to the WhatsApp Cloud API.
+         */
+        this.sendMessageFromApi = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId } = req.params;
+                const payload = req.body;
+                const result = yield WhatsAppService_1.whatsAppService.sendMessageFromApi(channelId, payload);
+                // Format response to match WhatsApp Cloud API
+                const wa_id = result.key.remoteJid.split('@')[0];
+                const formattedResponse = {
+                    messaging_product: 'whatsapp',
+                    contacts: [
+                        {
+                            input: payload.to,
+                            wa_id: wa_id,
+                        },
+                    ],
+                    messages: [
+                        {
+                            id: result.key.id,
+                        },
+                    ],
+                };
+                res.status(200).json(formattedResponse);
+            }
+            catch (error) {
+                console.error('Error sending message via API:', error);
+                (0, utils_1.handleError)(res, error);
+            }
+        });
+        /**
+         * Checks if a WhatsApp ID (JID) exists.
+         */
+        this.checkContact = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId, jid } = req.params;
+                const result = yield WhatsAppService_1.whatsAppService.checkIdExists(channelId, jid);
+                res.status(200).json({
+                    ok: true,
+                    payload: result,
+                });
+            }
+            catch (error) {
+                (0, utils_1.handleError)(res, error);
+            }
+        });
+        /**
+         * Fetches the status of a WhatsApp contact.
+         */
+        this.getContactStatus = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId, jid } = req.params;
+                const result = yield WhatsAppService_1.whatsAppService.fetchContactStatus(channelId, jid);
+                if (result) {
+                    res.status(200).json({
+                        ok: true,
+                        payload: result,
+                    });
+                }
+                else {
+                    (0, utils_1.handleError)(res, {
+                        code: 404,
+                        message: 'Status not found or private.',
+                    });
+                }
+            }
+            catch (error) {
+                (0, utils_1.handleError)(res, error);
+            }
+        });
+        /**
+         * Fetches the profile picture of a WhatsApp contact.
+         */
+        this.getProfilePicture = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                let { channelId, jid } = req.params;
+                console.log('Original jid:', jid);
+                jid = (0, utils_1.formatJid)(jid);
+                console.log('Formatted jid:', jid);
+                const { type } = req.query; // 'preview' or 'image'
+                // Download and save the profile picture locally
+                const localUrl = yield WhatsAppService_1.whatsAppService.downloadAndSaveProfilePicture(channelId, jid, type === 'image' ? 'image' : 'preview');
+                if (localUrl) {
+                    res.status(200).json({
+                        ok: true,
+                        payload: {
+                            url: localUrl,
+                            type: type === 'image' ? 'image' : 'preview',
+                            jid: jid,
+                        },
+                    });
+                }
+                else {
+                    (0, utils_1.handleError)(res, {
+                        code: 404,
+                        message: 'Profile picture not found or private.',
+                    });
+                }
+            }
+            catch (error) {
+                (0, utils_1.handleError)(res, error);
+            }
+        });
+        /**
+         * Adds or updates a webhook for a WhatsApp channel
+         */
+        this.addWebhook = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId } = req.params;
+                const { url, events } = req.body;
+                // Validate required fields
+                if (!url) {
+                    return utils.handleError(res, utils.buildErrObject(400, 'WEBHOOK_URL_REQUIRED'));
+                }
+                if (!events || !Array.isArray(events) || events.length === 0) {
+                    return utils.handleError(res, utils.buildErrObject(400, 'WEBHOOK_EVENTS_REQUIRED'));
+                }
+                // Validate events
+                const validEvents = [
+                    'message.received',
+                    'message.sent',
+                    'message.delivered',
+                    'message.read',
+                ];
+                const invalidEvents = events.filter((event) => !validEvents.includes(event));
+                if (invalidEvents.length > 0) {
+                    return utils.handleError(res, utils.buildErrObject(400, `INVALID_EVENTS: ${invalidEvents.join(', ')}`));
+                }
+                // Find channel
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (!channel) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'));
+                }
+                // Check if webhook with this URL already exists
+                const existingWebhookIndex = channel.webhooks.findIndex((webhook) => webhook.url === url);
+                if (existingWebhookIndex !== -1) {
+                    // Update existing webhook using updateOne to avoid validation issues
+                    yield Channels_1.default.updateOne({ channelId, 'webhooks.url': url }, {
+                        $set: {
+                            'webhooks.$.events': events,
+                            'webhooks.$.isActive': true,
+                        },
+                    });
+                }
+                else {
+                    // Add new webhook using updateOne
+                    yield Channels_1.default.updateOne({ channelId }, {
+                        $push: {
+                            webhooks: {
+                                url,
+                                events,
+                                isActive: true,
+                            },
+                        },
+                    });
+                }
+                console.log(`📋 Webhook ${existingWebhookIndex !== -1 ? 'updated' : 'added'} for channel ${channelId}: ${url}`);
+                res.status(200).json({
+                    ok: true,
+                    message: existingWebhookIndex !== -1 ? 'Webhook updated' : 'Webhook added',
+                    payload: {
+                        channelId,
+                        webhook: {
+                            url,
+                            events,
+                            isActive: true,
+                        },
+                    },
+                });
+            }
+            catch (error) {
+                utils.handleError(res, error);
+            }
+        });
+        /**
+         * Lists all webhooks for a WhatsApp channel
+         */
+        this.listWebhooks = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId } = req.params;
+                // Find channel
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (!channel) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'));
+                }
+                res.status(200).json({
+                    ok: true,
+                    payload: {
+                        channelId,
+                        webhooks: channel.webhooks,
+                    },
+                });
+            }
+            catch (error) {
+                utils.handleError(res, error);
+            }
+        });
+        /**
+         * Updates a specific webhook for a WhatsApp channel
+         */
+        this.updateWebhook = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId, webhookId } = req.params;
+                const { url, events, isActive } = req.body;
+                // Find channel
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (!channel) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'));
+                }
+                // Find webhook
+                const webhook = channel.webhooks.find((w) => { var _a; return ((_a = w._id) === null || _a === void 0 ? void 0 : _a.toString()) === webhookId; });
+                if (!webhook) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'WEBHOOK_NOT_FOUND'));
+                }
+                // Prepare update object
+                const updateFields = {};
+                if (url !== undefined)
+                    updateFields['webhooks.$.url'] = url;
+                if (events !== undefined) {
+                    // Validate events
+                    const validEvents = [
+                        'message.received',
+                        'message.sent',
+                        'message.delivered',
+                        'message.read',
+                    ];
+                    const invalidEvents = events.filter((event) => !validEvents.includes(event));
+                    if (invalidEvents.length > 0) {
+                        return utils.handleError(res, utils.buildErrObject(400, `INVALID_EVENTS: ${invalidEvents.join(', ')}`));
+                    }
+                    updateFields['webhooks.$.events'] = events;
+                }
+                if (isActive !== undefined)
+                    updateFields['webhooks.$.isActive'] = isActive;
+                // Update webhook using updateOne to avoid validation issues
+                yield Channels_1.default.updateOne({ channelId, 'webhooks._id': webhookId }, { $set: updateFields });
+                console.log(`📋 Webhook updated for channel ${channelId}: ${webhook.url}`);
+                res.status(200).json({
+                    ok: true,
+                    message: 'Webhook updated',
+                    payload: {
+                        channelId,
+                        webhook: {
+                            id: webhook._id,
+                            url: webhook.url,
+                            events: webhook.events,
+                            isActive: webhook.isActive,
+                        },
+                    },
+                });
+            }
+            catch (error) {
+                utils.handleError(res, error);
+            }
+        });
+        /**
+         * Deletes a webhook from a WhatsApp channel
+         */
+        this.deleteWebhook = (req, res) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { channelId, webhookId } = req.params;
+                // Find channel
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (!channel) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'));
+                }
+                // Find and remove webhook
+                const webhookIndex = channel.webhooks.findIndex((w) => { var _a; return ((_a = w._id) === null || _a === void 0 ? void 0 : _a.toString()) === webhookId; });
+                if (webhookIndex === -1) {
+                    return utils.handleError(res, utils.buildErrObject(404, 'WEBHOOK_NOT_FOUND'));
+                }
+                const webhookUrl = channel.webhooks[webhookIndex].url;
+                // Remove webhook using updateOne to avoid validation issues
+                yield Channels_1.default.updateOne({ channelId }, { $pull: { webhooks: { _id: webhookId } } });
+                console.log(`🗑️ Webhook deleted from channel ${channelId}: ${webhookUrl}`);
+                res.status(200).json({
+                    ok: true,
+                    message: 'Webhook deleted',
+                    payload: {
+                        channelId,
+                        deletedWebhookId: webhookId,
+                        deletedWebhookUrl: webhookUrl,
+                    },
                 });
             }
             catch (error) {

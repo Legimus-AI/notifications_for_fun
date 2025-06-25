@@ -38,14 +38,26 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.whatsAppService = exports.WhatsAppService = void 0;
 const baileys_1 = __importStar(require("@whiskeysockets/baileys"));
 const qrcode_1 = __importDefault(require("qrcode"));
+const node_cache_1 = __importDefault(require("node-cache"));
 const WhatsAppAuthState_1 = require("../models/WhatsAppAuthState");
 const Channels_1 = __importDefault(require("../models/Channels"));
 const events_1 = require("events");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const uuid_1 = require("uuid");
+const axios_1 = __importDefault(require("axios"));
 class WhatsAppService extends events_1.EventEmitter {
     constructor() {
         super();
         this.connections = new Map();
         this.connectionStatus = new Map();
+        // Initialize group metadata cache
+        // Cache for 1 hour (3600 seconds) with automatic cleanup every 5 minutes
+        this.groupCache = new node_cache_1.default({
+            stdTTL: 3600,
+            checkperiod: 300,
+            useClones: false, // Don't clone objects for better performance
+        });
     }
     /**
      * Restores all active channels on server restart
@@ -215,6 +227,16 @@ class WhatsAppService extends events_1.EventEmitter {
                     markOnlineOnConnect: false,
                     syncFullHistory: false,
                     defaultQueryTimeoutMs: 60000,
+                    // Implement cached group metadata to prevent rate limits and bans
+                    cachedGroupMetadata: (jid) => __awaiter(this, void 0, void 0, function* () {
+                        const cached = this.groupCache.get(jid);
+                        if (cached) {
+                            console.log(`📋 Using cached group metadata for ${jid}`);
+                            return cached;
+                        }
+                        console.log(`🔍 No cached metadata found for group ${jid}`);
+                        return undefined;
+                    }),
                     // getMessage: async (key) => {
                     //   // Implement message retrieval from your database
                     //   return null;
@@ -241,8 +263,21 @@ class WhatsAppService extends events_1.EventEmitter {
                 }));
                 // Handle groups update for metadata caching
                 sock.ev.on('groups.update', (updates) => __awaiter(this, void 0, void 0, function* () {
-                    // Implement group metadata caching if needed
-                    console.log('Groups updated:', updates);
+                    console.log(`🔄 Groups updated for channel ${channelId}:`, updates.length);
+                    // Cache updated group metadata to prevent rate limits
+                    for (const update of updates) {
+                        try {
+                            if (update.id && (update.subject || update.participants)) {
+                                // Fetch full group metadata and cache it
+                                const groupMetadata = yield sock.groupMetadata(update.id);
+                                this.groupCache.set(update.id, groupMetadata);
+                                console.log(`📋 Cached metadata for group ${update.id}`);
+                            }
+                        }
+                        catch (error) {
+                            console.error(`❌ Error caching group metadata for ${update.id}:`, error);
+                        }
+                    }
                 }));
             }
             catch (error) {
@@ -307,6 +342,12 @@ class WhatsAppService extends events_1.EventEmitter {
                 console.log(`✅ ${channelId} connected successfully`);
                 yield this.updateChannelStatus(channelId, 'active');
                 this.connectionStatus.set(channelId, 'active');
+                // Preload group metadata for better performance and rate limit prevention
+                setTimeout(() => {
+                    this.preloadGroupMetadata(channelId).catch((error) => {
+                        console.error(`❌ Error preloading group metadata for ${channelId}:`, error);
+                    });
+                }, 2000); // Wait 2 seconds after connection to ensure stability
             }
             // Emit connection update event
             this.emit('connection-update', channelId, connection || 'unknown', lastDisconnect);
@@ -329,11 +370,199 @@ class WhatsAppService extends events_1.EventEmitter {
                 // Skip if message is from us
                 if (message.key.fromMe)
                     continue;
-                console.log(`📨 Incoming message for ${channelId}:`, message);
-                // Emit message event
-                this.emit('message', channelId, message);
+                console.log(`📨 Incoming message for ${channelId}:`, JSON.stringify(message, null, 2));
+                // Format message to webhook payload format
+                const payload = yield this.formatMessageToWebhookPayload(channelId, message);
+                console.log(JSON.stringify(payload, null, 2));
+                // Emit message event with formatted payload
+                this.emit('message', channelId, payload);
+                // Send to webhooks
+                if (payload) {
+                    this.sendToWebhooks(channelId, 'message.received', payload);
+                }
                 // TODO: Save to NotificationLogs collection
                 // await this.saveIncomingMessage(channelId, message);
+            }
+        });
+    }
+    /**
+     * Sends payload to configured webhooks for a given event.
+     */
+    sendToWebhooks(channelId, event, payload) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (!channel || !channel.webhooks || channel.webhooks.length === 0) {
+                    return;
+                }
+                const webhooksToTrigger = channel.webhooks.filter((webhook) => webhook.isActive && webhook.events.includes(event));
+                if (webhooksToTrigger.length === 0) {
+                    return;
+                }
+                console.log(`🚀 Triggering ${webhooksToTrigger.length} webhooks for event '${event}' on channel ${channelId}`);
+                const webhookPromises = webhooksToTrigger.map((webhook) => {
+                    console.log(`  -> Sending to ${webhook.url}`);
+                    return axios_1.default
+                        .post(webhook.url, payload, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Channel-Id': channelId,
+                            'X-Event': event,
+                        },
+                    })
+                        .catch((error) => {
+                        console.error(`❌ Error sending webhook to ${webhook.url}:`, error.message);
+                        // We don't rethrow, just log the error to not stop other webhooks
+                    });
+                });
+                yield Promise.all(webhookPromises);
+            }
+            catch (error) {
+                console.error(`❌ Error processing webhooks for channel ${channelId}:`, error);
+            }
+        });
+    }
+    /**
+     * Formats a Baileys message into a WhatsApp Cloud API-like webhook payload.
+     */
+    formatMessageToWebhookPayload(channelId, message) {
+        var _a, _b;
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                return null;
+            }
+            const from = message.key.remoteJid;
+            const messageId = message.key.id;
+            const timestamp = message.messageTimestamp;
+            const contactName = message.pushName || from;
+            const payload = {
+                object: 'whatsapp_business_account',
+                entry: [
+                    {
+                        id: channelId,
+                        changes: [
+                            {
+                                value: {
+                                    messaging_product: 'whatsapp',
+                                    metadata: {
+                                        display_phone_number: (_a = sock.user) === null || _a === void 0 ? void 0 : _a.id.split(':')[0],
+                                        phone_number_id: (_b = sock.user) === null || _b === void 0 ? void 0 : _b.id,
+                                    },
+                                    contacts: [
+                                        {
+                                            profile: {
+                                                name: contactName,
+                                            },
+                                            wa_id: from,
+                                        },
+                                    ],
+                                    messages: [
+                                        {
+                                            from,
+                                            id: messageId,
+                                            timestamp,
+                                        },
+                                    ],
+                                },
+                                field: 'messages',
+                            },
+                        ],
+                    },
+                ],
+            };
+            const messageContent = message.message;
+            const messageContainer = payload.entry[0].changes[0].value.messages[0];
+            let contextInfo;
+            if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.conversation) {
+                messageContainer.type = 'text';
+                messageContainer.text = { body: messageContent.conversation };
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.extendedTextMessage) {
+                messageContainer.type = 'text';
+                messageContainer.text = { body: messageContent.extendedTextMessage.text };
+                contextInfo = messageContent.extendedTextMessage.contextInfo;
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.imageMessage) {
+                messageContainer.type = 'image';
+                messageContainer.image = yield this.extractMediaPayload(channelId, message, 'image', messageContent.imageMessage);
+                contextInfo = messageContent.imageMessage.contextInfo;
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.videoMessage) {
+                messageContainer.type = 'video';
+                messageContainer.video = yield this.extractMediaPayload(channelId, message, 'video', messageContent.videoMessage);
+                contextInfo = messageContent.videoMessage.contextInfo;
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.audioMessage) {
+                messageContainer.type = 'audio';
+                messageContainer.audio = yield this.extractMediaPayload(channelId, message, 'audio', messageContent.audioMessage);
+                contextInfo = messageContent.audioMessage.contextInfo;
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.documentMessage) {
+                messageContainer.type = 'document';
+                messageContainer.document = yield this.extractMediaPayload(channelId, message, 'document', messageContent.documentMessage);
+                contextInfo = messageContent.documentMessage.contextInfo;
+            }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.stickerMessage) {
+                messageContainer.type = 'sticker';
+                messageContainer.sticker = yield this.extractMediaPayload(channelId, message, 'sticker', messageContent.stickerMessage);
+                contextInfo = messageContent.stickerMessage.contextInfo;
+            }
+            else {
+                messageContainer.type = 'unsupported';
+                messageContainer.errors = [
+                    {
+                        code: 501,
+                        title: 'Unsupported message type',
+                    },
+                ];
+            }
+            // Handle context for replies
+            if (contextInfo && contextInfo.stanzaId) {
+                messageContainer.context = {
+                    from: contextInfo.participant,
+                    id: contextInfo.stanzaId,
+                    quotedMessage: contextInfo.quotedMessage,
+                };
+            }
+            return payload;
+        });
+    }
+    /**
+     * Extracts media from a message, saves it, and returns the media payload.
+     */
+    extractMediaPayload(channelId, message, type, mediaMessage) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const buffer = yield (0, baileys_1.downloadMediaMessage)(message, 'buffer', {});
+                const fileExtension = mediaMessage.mimetype.split('/')[1].split(';')[0];
+                const fileName = `${(0, uuid_1.v4)()}.${fileExtension}`;
+                const storagePath = path_1.default.join(__dirname, `../../storage/${channelId}`);
+                if (!fs_1.default.existsSync(storagePath)) {
+                    fs_1.default.mkdirSync(storagePath, { recursive: true });
+                }
+                const filePath = path_1.default.join(storagePath, fileName);
+                yield fs_1.default.promises.writeFile(filePath, buffer);
+                const url = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+                const payload = {
+                    mime_type: mediaMessage.mimetype,
+                    url: url,
+                    // sha256: mediaMessage.fileSha256.toString('base64'),
+                    // file_length: mediaMessage.fileLength,
+                };
+                if ('caption' in mediaMessage) {
+                    payload.caption = mediaMessage.caption;
+                }
+                if ('fileName' in mediaMessage) {
+                    payload.filename = mediaMessage.fileName;
+                }
+                return payload;
+            }
+            catch (error) {
+                console.error(`❌ Error downloading media for message ${message.key.id}:`, error);
+                return {
+                    error: 'Failed to download media',
+                };
             }
         });
     }
@@ -524,6 +753,8 @@ class WhatsAppService extends events_1.EventEmitter {
             console.log('🧹 Cleaning up WhatsApp connections...');
             const disconnectPromises = Array.from(this.connections.keys()).map((channelId) => this.disconnectChannel(channelId));
             yield Promise.all(disconnectPromises);
+            // Clear all cached group metadata
+            this.clearGroupCache();
         });
     }
     /**
@@ -538,6 +769,210 @@ class WhatsAppService extends events_1.EventEmitter {
             }
             catch (error) {
                 console.error(`❌ Error clearing auth state for ${channelId}:`, error);
+            }
+        });
+    }
+    /**
+     * Preloads group metadata for a channel to improve performance
+     */
+    preloadGroupMetadata(channelId) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                console.warn(`⚠️ Cannot preload groups for disconnected channel: ${channelId}`);
+                return;
+            }
+            try {
+                console.log(`📋 Preloading group metadata for channel: ${channelId}`);
+                // Get list of groups the bot is part of
+                const groups = yield sock.groupFetchAllParticipating();
+                // Cache metadata for each group
+                let cachedCount = 0;
+                for (const [jid, group] of Object.entries(groups)) {
+                    try {
+                        this.groupCache.set(jid, group);
+                        cachedCount++;
+                    }
+                    catch (error) {
+                        console.error(`❌ Error caching group ${jid}:`, error);
+                    }
+                }
+                console.log(`✅ Cached metadata for ${cachedCount} groups in channel ${channelId}`);
+            }
+            catch (error) {
+                console.error(`❌ Error preloading group metadata for ${channelId}:`, error);
+            }
+        });
+    }
+    /**
+     * Clears cached group metadata for a specific channel or all channels
+     */
+    clearGroupCache(channelId) {
+        if (channelId) {
+            // Clear cache entries for specific channel (if we had channel-specific keys)
+            console.log(`🧹 Clearing group cache for channel: ${channelId}`);
+            // Since we're using JID as keys, we can't easily filter by channel
+            // This would require a more complex key structure if needed
+        }
+        else {
+            // Clear all cached group metadata
+            this.groupCache.flushAll();
+            console.log('🧹 Cleared all cached group metadata');
+        }
+    }
+    /**
+     * Sends a message using a format similar to the WhatsApp Cloud API.
+     * This handles both single and bulk messages.
+     */
+    sendMessageFromApi(channelId, payload) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                throw new Error(`Channel ${channelId} is not connected`);
+            }
+            let to = payload.to;
+            // check if to has @s.whatsapp.net
+            if (!to.includes('@s.whatsapp.net')) {
+                to = to + '@s.whatsapp.net';
+            }
+            if (!to) {
+                throw new Error('Recipient "to" is required');
+            }
+            let messageContent;
+            switch (payload.type) {
+                case 'text':
+                    messageContent = { text: payload.text.body };
+                    break;
+                case 'image':
+                case 'video':
+                case 'audio':
+                case 'document':
+                    const mediaUrl = payload[payload.type].link;
+                    const caption = payload[payload.type].caption;
+                    if (!mediaUrl) {
+                        throw new Error(`"link" is required for media type "${payload.type}"`);
+                    }
+                    messageContent = {
+                        [payload.type]: { url: mediaUrl },
+                        caption: caption,
+                    };
+                    break;
+                default:
+                    throw new Error(`Unsupported message type: "${payload.type}"`);
+            }
+            try {
+                const message = yield sock.sendMessage(to, messageContent);
+                return message;
+            }
+            catch (error) {
+                console.error(`❌ Error sending message from ${channelId}:`, error);
+                throw error;
+            }
+        });
+    }
+    /**
+     * Checks if a given ID (JID) exists on WhatsApp.
+     */
+    checkIdExists(channelId, jid) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                throw new Error(`Channel ${channelId} is not connected`);
+            }
+            const [result] = yield sock.onWhatsApp(jid);
+            if (result) {
+                return { jid: result.jid, exists: !!result.exists };
+            }
+            return { exists: false, jid };
+        });
+    }
+    /**
+     * Fetches the status of a contact.
+     */
+    fetchContactStatus(channelId, jid) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                throw new Error(`Channel ${channelId} is not connected`);
+            }
+            try {
+                const status = yield sock.fetchStatus(jid);
+                return status;
+            }
+            catch (error) {
+                console.error(`❌ Error fetching status for ${jid}:`, error);
+                // It often fails if the user doesn't have a status or has privacy settings
+                return undefined;
+            }
+        });
+    }
+    /**
+     * Fetches the profile picture URL of a contact or group.
+     */
+    fetchProfilePictureUrl(channelId, jid, type = 'preview') {
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                throw new Error(`Channel ${channelId} is not connected`);
+            }
+            try {
+                const url = yield sock.profilePictureUrl(jid, type);
+                return url;
+            }
+            catch (error) {
+                console.error(`❌ Error fetching profile picture for ${jid}:`, error);
+                // This can fail if the user has no profile picture or due to privacy settings
+                return undefined;
+            }
+        });
+    }
+    /**
+     * Downloads and saves a profile picture locally, returning the local URL.
+     */
+    downloadAndSaveProfilePicture(channelId, jid, type = 'preview') {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                // First get the profile picture URL from WhatsApp
+                const profilePictureUrl = yield this.fetchProfilePictureUrl(channelId, jid, type);
+                if (!profilePictureUrl) {
+                    return undefined;
+                }
+                // Download the image
+                const response = yield axios_1.default.get(profilePictureUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 30000, // 30 second timeout
+                });
+                const buffer = Buffer.from(response.data);
+                // Determine file extension from content type or default to jpg
+                const contentType = response.headers['content-type'];
+                let fileExtension = 'jpg';
+                if (contentType) {
+                    if (contentType.includes('png'))
+                        fileExtension = 'png';
+                    else if (contentType.includes('gif'))
+                        fileExtension = 'gif';
+                    else if (contentType.includes('webp'))
+                        fileExtension = 'webp';
+                }
+                // Create filename with sanitized JID
+                const sanitizedJid = jid.replace(/[@.]/g, '_');
+                const fileName = `profile_${sanitizedJid}_${type}_${Date.now()}.${fileExtension}`;
+                // Ensure storage directory exists
+                const storagePath = path_1.default.join(__dirname, `../../storage/${channelId}`);
+                if (!fs_1.default.existsSync(storagePath)) {
+                    fs_1.default.mkdirSync(storagePath, { recursive: true });
+                }
+                // Save the file
+                const filePath = path_1.default.join(storagePath, fileName);
+                yield fs_1.default.promises.writeFile(filePath, buffer);
+                // Return the public URL
+                const publicUrl = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+                console.log(`📸 Profile picture saved for ${jid}: ${publicUrl}`);
+                return publicUrl;
+            }
+            catch (error) {
+                console.error(`❌ Error downloading and saving profile picture for ${jid}:`, error);
+                return undefined;
             }
         });
     }

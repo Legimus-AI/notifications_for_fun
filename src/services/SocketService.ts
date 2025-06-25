@@ -157,19 +157,9 @@ export class SocketService {
     );
 
     // Listen for incoming messages
-    whatsAppService.on('message', (channelId: string, message: any) => {
+    whatsAppService.on('message', (channelId: string, payload: any) => {
       console.log(`💬 Incoming message for channel: ${channelId}`);
-
-      const messageData = {
-        channelId,
-        messageId: message.key.id,
-        from: message.key.remoteJid,
-        timestamp: new Date(message.messageTimestamp * 1000).toISOString(),
-        message: message.message,
-        type: 'incoming',
-      };
-
-      this.io.to(`channel_${channelId}`).emit('incoming_message', messageData);
+      this.io.to(`channel_${channelId}`).emit('incoming_message', payload);
     });
 
     // Listen for message status updates

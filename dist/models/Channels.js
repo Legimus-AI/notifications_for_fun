@@ -81,6 +81,30 @@ const ChannelSchema = new mongoose_1.Schema({
         type: Boolean,
         default: true,
     },
+    webhooks: [
+        new mongoose_1.Schema({
+            url: {
+                type: String,
+                required: true,
+            },
+            events: {
+                type: [String],
+                required: true,
+                enum: [
+                    'message.received',
+                    'message.sent',
+                    'message.delivered',
+                    'message.read',
+                ],
+            },
+            isActive: {
+                type: Boolean,
+                default: true,
+            },
+        }, {
+            versionKey: false,
+        }),
+    ],
 }, {
     versionKey: false,
     timestamps: true,

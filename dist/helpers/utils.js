@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemAlreadyExists = exports.itemNotFound = exports.isIDGood = exports.buildSuccObject = exports.validationResultMiddleware = exports.buildErrObject = exports.handleError = exports.getCountry = exports.getBrowserInfo = exports.getIP = exports.removeExtensionFromFile = exports.Random = exports.selectRandomId = exports.convertToDate = void 0;
+exports.formatJid = exports.itemAlreadyExists = exports.itemNotFound = exports.isIDGood = exports.buildSuccObject = exports.validationResultMiddleware = exports.buildErrObject = exports.handleError = exports.getCountry = exports.getBrowserInfo = exports.getIP = exports.removeExtensionFromFile = exports.Random = exports.selectRandomId = exports.convertToDate = void 0;
 const mongoose_1 = __importDefault(require("mongoose"));
 const request_ip_1 = __importDefault(require("request-ip"));
 const express_validator_1 = require("express-validator");
@@ -30,14 +30,24 @@ exports.getBrowserInfo = getBrowserInfo;
 const getCountry = (req) => req.headers['cf-ipcountry'] ? req.headers['cf-ipcountry'] : 'XX';
 exports.getCountry = getCountry;
 const handleError = (res, err) => {
-    if (process.env.NODE_ENV !== 'production') {
-        console.log(err);
+    try {
+        if (process.env.NODE_ENV !== 'production') {
+            console.log(err);
+        }
+        res.status(err === null || err === void 0 ? void 0 : err.code).json({
+            errors: {
+                msg: err === null || err === void 0 ? void 0 : err.message,
+            },
+        });
     }
-    res.status(err.code).json({
-        errors: {
-            msg: err.message,
-        },
-    });
+    catch (error) {
+        console.error(error);
+        res.status(500).json({
+            errors: {
+                msg: 'Internal server error',
+            },
+        });
+    }
 };
 exports.handleError = handleError;
 const buildErrObject = (code, message) => ({
@@ -85,4 +95,12 @@ const itemAlreadyExists = (err, item, reject, message) => {
     }
 };
 exports.itemAlreadyExists = itemAlreadyExists;
+const formatJid = (jid) => {
+    const suffix = '@s.whatsapp.net';
+    if (jid.includes(suffix)) {
+        return jid;
+    }
+    return jid + suffix;
+};
+exports.formatJid = formatJid;
 //# sourceMappingURL=utils.js.map
