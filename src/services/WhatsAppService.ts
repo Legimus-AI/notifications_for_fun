@@ -41,6 +41,8 @@ export class WhatsAppService extends EventEmitter {
   private connections: Map<string, WASocket> = new Map();
   private connectionStatus: Map<string, string> = new Map();
   private groupCache: NodeCache;
+  private preloadAttempts: Map<string, number> = new Map(); // Track preload attempts per channel
+  private lastPreloadAttempt: Map<string, number> = new Map(); // Track last preload timestamp
 
   constructor() {
     super();
@@ -308,18 +310,27 @@ export class WhatsAppService extends EventEmitter {
           updates.length,
         );
 
-        // Cache updated group metadata to prevent rate limits
+        // Only cache metadata that we already have or that's provided in the update
+        // Avoid fetching metadata to prevent rate limits as per Baileys documentation
         for (const update of updates) {
           try {
-            if (update.id && (update.subject || update.participants)) {
-              // Fetch full group metadata and cache it
-              const groupMetadata = await sock.groupMetadata(update.id);
-              this.groupCache.set(update.id, groupMetadata);
-              console.log(`📋 Cached metadata for group ${update.id}`);
+            if (update.id) {
+              // Only cache if we have the actual metadata in the update
+              // Don't fetch it to avoid rate limits
+              if (update.participants || update.subject || update.desc) {
+                console.log(
+                  `📋 Caching updated metadata for group ${update.id} (from update event)`,
+                );
+                // Cache the partial update - Baileys will handle full metadata when needed
+                const existingCache =
+                  (this.groupCache.get(update.id) as any) || {};
+                const updatedMetadata = { ...existingCache, ...update };
+                this.groupCache.set(update.id, updatedMetadata);
+              }
             }
           } catch (error) {
             console.error(
-              `❌ Error caching group metadata for ${update.id}:`,
+              `❌ Error caching group metadata update for ${update.id}:`,
               error,
             );
           }
@@ -402,15 +413,16 @@ export class WhatsAppService extends EventEmitter {
       await this.updateChannelStatus(channelId, 'active');
       this.connectionStatus.set(channelId, 'active');
 
-      // Preload group metadata for better performance and rate limit prevention
-      setTimeout(() => {
-        this.preloadGroupMetadata(channelId).catch((error) => {
-          console.error(
-            `❌ Error preloading group metadata for ${channelId}:`,
-            error,
-          );
-        });
-      }, 2000); // Wait 2 seconds after connection to ensure stability
+      // Reset preload attempts on successful connection
+      this.preloadAttempts.delete(channelId);
+      this.lastPreloadAttempt.delete(channelId);
+
+      console.log(
+        `📋 Group metadata caching enabled for ${channelId} - will cache on-demand to prevent rate limits (following Baileys best practices)`,
+      );
+      console.log(
+        `ℹ️ Skipping aggressive group preloading to prevent rate-overlimit errors as recommended by Baileys documentation`,
+      );
     }
 
     // Emit connection update event
@@ -862,6 +874,8 @@ export class WhatsAppService extends EventEmitter {
       // Remove from all memory maps
       this.connections.delete(channelId);
       this.connectionStatus.delete(channelId);
+      this.preloadAttempts.delete(channelId);
+      this.lastPreloadAttempt.delete(channelId);
 
       // Clear auth state if it exists
       await this.clearAuthState(channelId);
@@ -917,6 +931,10 @@ export class WhatsAppService extends EventEmitter {
 
     // Clear all cached group metadata
     this.clearGroupCache();
+
+    // Clear all tracking maps
+    this.preloadAttempts.clear();
+    this.lastPreloadAttempt.clear();
   }
 
   /**
@@ -933,43 +951,58 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Preloads group metadata for a channel to improve performance
+   * Checks if we should attempt group metadata preloading for a channel
+   */
+  private shouldAttemptGroupPreload(channelId: string): boolean {
+    const maxAttempts = 3; // Maximum attempts before giving up
+    const cooldownPeriod = 5 * 60 * 1000; // 5 minutes cooldown between attempts
+
+    const attempts = this.preloadAttempts.get(channelId) || 0;
+    const lastAttempt = this.lastPreloadAttempt.get(channelId) || 0;
+    const now = Date.now();
+
+    // Don't attempt if we've exceeded max attempts
+    if (attempts >= maxAttempts) {
+      return false;
+    }
+
+    // Don't attempt if we're still in cooldown period
+    if (lastAttempt > 0 && now - lastAttempt < cooldownPeriod) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Gets the delay for group metadata preloading based on attempt count
+   */
+  private getPreloadDelay(channelId: string): number {
+    const attempts = this.preloadAttempts.get(channelId) || 0;
+    const baseDelay = 10000; // 10 seconds base delay
+
+    // Exponential backoff: 10s, 30s, 60s
+    const delays = [10000, 30000, 60000];
+    return delays[Math.min(attempts, delays.length - 1)];
+  }
+
+  /**
+   * DEPRECATED: Manual group metadata preloading is discouraged by Baileys documentation
+   * as it causes rate-overlimit errors. The cachedGroupMetadata function handles this automatically.
+   *
+   * This method is kept for backward compatibility but should not be used.
+   * See: https://baileys.wiki/docs/socket/configuration#cachedgroupmetadata
    */
   async preloadGroupMetadata(channelId: string): Promise<void> {
-    const sock = this.connections.get(channelId);
-    if (!sock) {
-      console.warn(
-        `⚠️ Cannot preload groups for disconnected channel: ${channelId}`,
-      );
-      return;
-    }
+    console.warn(
+      `⚠️ preloadGroupMetadata is deprecated - Baileys handles group metadata caching automatically to prevent rate limits`,
+    );
+    console.warn(
+      `ℹ️ See: https://baileys.wiki/docs/socket/configuration#cachedgroupmetadata`,
+    );
 
-    try {
-      console.log(`📋 Preloading group metadata for channel: ${channelId}`);
-
-      // Get list of groups the bot is part of
-      const groups = await sock.groupFetchAllParticipating();
-
-      // Cache metadata for each group
-      let cachedCount = 0;
-      for (const [jid, group] of Object.entries(groups)) {
-        try {
-          this.groupCache.set(jid, group);
-          cachedCount++;
-        } catch (error) {
-          console.error(`❌ Error caching group ${jid}:`, error);
-        }
-      }
-
-      console.log(
-        `✅ Cached metadata for ${cachedCount} groups in channel ${channelId}`,
-      );
-    } catch (error) {
-      console.error(
-        `❌ Error preloading group metadata for ${channelId}:`,
-        error,
-      );
-    }
+    // Don't actually preload - let Baileys handle it on-demand
+    return;
   }
 
   /**
