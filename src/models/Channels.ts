@@ -1,6 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import mongoosePaginate from 'mongoose-paginate-v2';
-import validator from 'validator';
 
 // whatsapp_automated specific config interface
 interface WhatsAppAutomatedConfig {

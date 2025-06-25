@@ -9,10 +9,11 @@ import makeWASocket, {
   downloadMediaMessage,
   proto,
   WAMessage,
-  getDevice,
+  GroupMetadata,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
+import NodeCache from 'node-cache';
 import {
   WhatsAppAuthState,
   WhatsAppAuthKey,
@@ -39,9 +40,18 @@ export interface WhatsAppServiceEvents {
 export class WhatsAppService extends EventEmitter {
   private connections: Map<string, WASocket> = new Map();
   private connectionStatus: Map<string, string> = new Map();
+  private groupCache: NodeCache;
 
   constructor() {
     super();
+
+    // Initialize group metadata cache
+    // Cache for 1 hour (3600 seconds) with automatic cleanup every 5 minutes
+    this.groupCache = new NodeCache({
+      stdTTL: 3600, // 1 hour
+      checkperiod: 300, // Check for expired keys every 5 minutes
+      useClones: false, // Don't clone objects for better performance
+    });
   }
 
   /**
@@ -251,6 +261,16 @@ export class WhatsAppService extends EventEmitter {
         markOnlineOnConnect: false,
         syncFullHistory: false,
         defaultQueryTimeoutMs: 60000,
+        // Implement cached group metadata to prevent rate limits and bans
+        cachedGroupMetadata: async (jid) => {
+          const cached = this.groupCache.get(jid);
+          if (cached) {
+            console.log(`📋 Using cached group metadata for ${jid}`);
+            return cached as GroupMetadata;
+          }
+          console.log(`🔍 No cached metadata found for group ${jid}`);
+          return undefined;
+        },
         // getMessage: async (key) => {
         //   // Implement message retrieval from your database
         //   return null;
@@ -283,8 +303,27 @@ export class WhatsAppService extends EventEmitter {
 
       // Handle groups update for metadata caching
       sock.ev.on('groups.update', async (updates) => {
-        // Implement group metadata caching if needed
-        console.log('Groups updated:', updates);
+        console.log(
+          `🔄 Groups updated for channel ${channelId}:`,
+          updates.length,
+        );
+
+        // Cache updated group metadata to prevent rate limits
+        for (const update of updates) {
+          try {
+            if (update.id && (update.subject || update.participants)) {
+              // Fetch full group metadata and cache it
+              const groupMetadata = await sock.groupMetadata(update.id);
+              this.groupCache.set(update.id, groupMetadata);
+              console.log(`📋 Cached metadata for group ${update.id}`);
+            }
+          } catch (error) {
+            console.error(
+              `❌ Error caching group metadata for ${update.id}:`,
+              error,
+            );
+          }
+        }
       });
     } catch (error) {
       console.error(`❌ Error connecting channel ${channelId}:`, error);
@@ -362,6 +401,16 @@ export class WhatsAppService extends EventEmitter {
       console.log(`✅ ${channelId} connected successfully`);
       await this.updateChannelStatus(channelId, 'active');
       this.connectionStatus.set(channelId, 'active');
+
+      // Preload group metadata for better performance and rate limit prevention
+      setTimeout(() => {
+        this.preloadGroupMetadata(channelId).catch((error) => {
+          console.error(
+            `❌ Error preloading group metadata for ${channelId}:`,
+            error,
+          );
+        });
+      }, 2000); // Wait 2 seconds after connection to ensure stability
     }
 
     // Emit connection update event
@@ -865,6 +914,9 @@ export class WhatsAppService extends EventEmitter {
       (channelId) => this.disconnectChannel(channelId),
     );
     await Promise.all(disconnectPromises);
+
+    // Clear all cached group metadata
+    this.clearGroupCache();
   }
 
   /**
@@ -877,6 +929,62 @@ export class WhatsAppService extends EventEmitter {
       console.log(`🧹 Cleared auth state for channel: ${channelId}`);
     } catch (error) {
       console.error(`❌ Error clearing auth state for ${channelId}:`, error);
+    }
+  }
+
+  /**
+   * Preloads group metadata for a channel to improve performance
+   */
+  async preloadGroupMetadata(channelId: string): Promise<void> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      console.warn(
+        `⚠️ Cannot preload groups for disconnected channel: ${channelId}`,
+      );
+      return;
+    }
+
+    try {
+      console.log(`📋 Preloading group metadata for channel: ${channelId}`);
+
+      // Get list of groups the bot is part of
+      const groups = await sock.groupFetchAllParticipating();
+
+      // Cache metadata for each group
+      let cachedCount = 0;
+      for (const [jid, group] of Object.entries(groups)) {
+        try {
+          this.groupCache.set(jid, group);
+          cachedCount++;
+        } catch (error) {
+          console.error(`❌ Error caching group ${jid}:`, error);
+        }
+      }
+
+      console.log(
+        `✅ Cached metadata for ${cachedCount} groups in channel ${channelId}`,
+      );
+    } catch (error) {
+      console.error(
+        `❌ Error preloading group metadata for ${channelId}:`,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Clears cached group metadata for a specific channel or all channels
+   */
+  clearGroupCache(channelId?: string): void {
+    if (channelId) {
+      // Clear cache entries for specific channel (if we had channel-specific keys)
+      console.log(`🧹 Clearing group cache for channel: ${channelId}`);
+      // Since we're using JID as keys, we can't easily filter by channel
+      // This would require a more complex key structure if needed
+    } else {
+      // Clear all cached group metadata
+      this.groupCache.flushAll();
+      console.log('🧹 Cleared all cached group metadata');
     }
   }
 
