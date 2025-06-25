@@ -142,11 +142,6 @@ const startServer = async () => {
     socketService = new SocketService(httpServer);
     console.log('✅ Socket.io service initialized');
 
-    // Restore active WhatsApp channels
-    console.log('🔄 Restoring active WhatsApp channels...');
-    await whatsAppService.restoreActiveChannels();
-    console.log('✅ WhatsApp channels restoration completed');
-
     // Start HTTP server
     const port = app.get('port');
     httpServer.listen(port, () => {
@@ -156,6 +151,11 @@ const startServer = async () => {
         `🔌 Socket.io server ready on ws://localhost:${port}/socket.io/`,
       );
     });
+
+    // Restore active WhatsApp channels
+    console.log('🔄 Restoring active WhatsApp channels...');
+    await whatsAppService.restoreActiveChannels();
+    console.log('✅ WhatsApp channels restoration completed');
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);

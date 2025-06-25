@@ -116,6 +116,14 @@ const itemAlreadyExists = (
   }
 };
 
+const formatJid = (jid: string): string => {
+  const suffix = '@s.whatsapp.net';
+  if (jid.includes(suffix)) {
+    return jid;
+  }
+  return jid + suffix;
+};
+
 export {
   convertToDate,
   selectRandomId,
@@ -131,4 +139,5 @@ export {
   isIDGood,
   itemNotFound,
   itemAlreadyExists,
+  formatJid,
 };

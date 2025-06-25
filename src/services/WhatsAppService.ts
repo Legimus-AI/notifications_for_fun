@@ -1102,6 +1102,71 @@ export class WhatsAppService extends EventEmitter {
       return undefined;
     }
   }
+
+  /**
+   * Downloads and saves a profile picture locally, returning the local URL.
+   */
+  async downloadAndSaveProfilePicture(
+    channelId: string,
+    jid: string,
+    type: 'preview' | 'image' = 'preview',
+  ): Promise<string | undefined> {
+    try {
+      // First get the profile picture URL from WhatsApp
+      const profilePictureUrl = await this.fetchProfilePictureUrl(
+        channelId,
+        jid,
+        type,
+      );
+
+      if (!profilePictureUrl) {
+        return undefined;
+      }
+
+      // Download the image
+      const response = await axios.get(profilePictureUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000, // 30 second timeout
+      });
+
+      const buffer = Buffer.from(response.data);
+
+      // Determine file extension from content type or default to jpg
+      const contentType = response.headers['content-type'];
+      let fileExtension = 'jpg';
+      if (contentType) {
+        if (contentType.includes('png')) fileExtension = 'png';
+        else if (contentType.includes('gif')) fileExtension = 'gif';
+        else if (contentType.includes('webp')) fileExtension = 'webp';
+      }
+
+      // Create filename with sanitized JID
+      const sanitizedJid = jid.replace(/[@.]/g, '_');
+      const fileName = `profile_${sanitizedJid}_${type}_${Date.now()}.${fileExtension}`;
+
+      // Ensure storage directory exists
+      const storagePath = path.join(__dirname, `../../storage/${channelId}`);
+      if (!fs.existsSync(storagePath)) {
+        fs.mkdirSync(storagePath, { recursive: true });
+      }
+
+      // Save the file
+      const filePath = path.join(storagePath, fileName);
+      await fs.promises.writeFile(filePath, buffer);
+
+      // Return the public URL
+      const publicUrl = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+
+      console.log(`📸 Profile picture saved for ${jid}: ${publicUrl}`);
+      return publicUrl;
+    } catch (error) {
+      console.error(
+        `❌ Error downloading and saving profile picture for ${jid}:`,
+        error,
+      );
+      return undefined;
+    }
+  }
 }
 
 // Singleton instance

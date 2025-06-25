@@ -4,8 +4,7 @@ import * as utils from '../helpers/utils';
 import Channel from '../models/Channels';
 import { whatsAppService } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
-import { matchedData } from 'express-validator';
-import { handleError } from '../helpers/utils';
+import { handleError, formatJid } from '../helpers/utils';
 
 // Type guard for WhatsApp config
 interface WhatsAppAutomatedConfig {
@@ -562,19 +561,27 @@ class WhatsAppController {
    */
   public getProfilePicture = async (req: Request, res: Response) => {
     try {
-      const { channelId, jid } = req.params;
+      let { channelId, jid } = req.params;
+      console.log('Original jid:', jid);
+      jid = formatJid(jid);
+      console.log('Formatted jid:', jid);
       const { type } = req.query; // 'preview' or 'image'
 
-      const result = await whatsAppService.fetchProfilePictureUrl(
+      // Download and save the profile picture locally
+      const localUrl = await whatsAppService.downloadAndSaveProfilePicture(
         channelId,
         jid,
         type === 'image' ? 'image' : 'preview',
       );
 
-      if (result) {
+      if (localUrl) {
         res.status(200).json({
           ok: true,
-          payload: { url: result },
+          payload: {
+            url: localUrl,
+            type: type === 'image' ? 'image' : 'preview',
+            jid: jid,
+          },
         });
       } else {
         handleError(res, {
