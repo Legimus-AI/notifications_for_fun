@@ -59,6 +59,21 @@ router.get(
 );
 
 //
+// Webhook Management Routes
+//
+
+router.post('/channels/:channelId/webhooks', whatsAppController.addWebhook);
+router.get('/channels/:channelId/webhooks', whatsAppController.listWebhooks);
+router.put(
+  '/channels/:channelId/webhooks/:webhookId',
+  whatsAppController.updateWebhook,
+);
+router.delete(
+  '/channels/:channelId/webhooks/:webhookId',
+  whatsAppController.deleteWebhook,
+);
+
+//
 // Debugging Routes
 //
 
