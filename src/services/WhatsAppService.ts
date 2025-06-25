@@ -951,42 +951,6 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Checks if we should attempt group metadata preloading for a channel
-   */
-  private shouldAttemptGroupPreload(channelId: string): boolean {
-    const maxAttempts = 3; // Maximum attempts before giving up
-    const cooldownPeriod = 5 * 60 * 1000; // 5 minutes cooldown between attempts
-
-    const attempts = this.preloadAttempts.get(channelId) || 0;
-    const lastAttempt = this.lastPreloadAttempt.get(channelId) || 0;
-    const now = Date.now();
-
-    // Don't attempt if we've exceeded max attempts
-    if (attempts >= maxAttempts) {
-      return false;
-    }
-
-    // Don't attempt if we're still in cooldown period
-    if (lastAttempt > 0 && now - lastAttempt < cooldownPeriod) {
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Gets the delay for group metadata preloading based on attempt count
-   */
-  private getPreloadDelay(channelId: string): number {
-    const attempts = this.preloadAttempts.get(channelId) || 0;
-    const baseDelay = 10000; // 10 seconds base delay
-
-    // Exponential backoff: 10s, 30s, 60s
-    const delays = [10000, 30000, 60000];
-    return delays[Math.min(attempts, delays.length - 1)];
-  }
-
-  /**
    * DEPRECATED: Manual group metadata preloading is discouraged by Baileys documentation
    * as it causes rate-overlimit errors. The cachedGroupMetadata function handles this automatically.
    *
