@@ -22,6 +22,7 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -407,8 +408,63 @@ export class WhatsAppService extends EventEmitter {
       // Emit message event with formatted payload
       this.emit('message', channelId, payload);
 
+      // Send to webhooks
+      if (payload) {
+        this.sendToWebhooks(channelId, 'message.received', payload);
+      }
+
       // TODO: Save to NotificationLogs collection
       // await this.saveIncomingMessage(channelId, message);
+    }
+  }
+
+  /**
+   * Sends payload to configured webhooks for a given event.
+   */
+  private async sendToWebhooks(channelId: string, event: string, payload: any) {
+    try {
+      const channel = await Channel.findOne({ channelId });
+      if (!channel || !channel.webhooks || channel.webhooks.length === 0) {
+        return;
+      }
+
+      const webhooksToTrigger = channel.webhooks.filter(
+        (webhook) => webhook.isActive && webhook.events.includes(event),
+      );
+
+      if (webhooksToTrigger.length === 0) {
+        return;
+      }
+
+      console.log(
+        `🚀 Triggering ${webhooksToTrigger.length} webhooks for event '${event}' on channel ${channelId}`,
+      );
+
+      const webhookPromises = webhooksToTrigger.map((webhook) => {
+        console.log(`  -> Sending to ${webhook.url}`);
+        return axios
+          .post(webhook.url, payload, {
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Channel-Id': channelId,
+              'X-Event': event,
+            },
+          })
+          .catch((error) => {
+            console.error(
+              `❌ Error sending webhook to ${webhook.url}:`,
+              error.message,
+            );
+            // We don't rethrow, just log the error to not stop other webhooks
+          });
+      });
+
+      await Promise.all(webhookPromises);
+    } catch (error) {
+      console.error(
+        `❌ Error processing webhooks for channel ${channelId}:`,
+        error,
+      );
     }
   }
 

@@ -37,6 +37,12 @@ interface TelegramConfig {
   botUsername?: string;
 }
 
+export interface IWebhook extends Document {
+  url: string;
+  events: string[];
+  isActive: boolean;
+}
+
 export type ChannelConfig =
   | WhatsAppAutomatedConfig
   | EmailConfig
@@ -52,6 +58,7 @@ export interface IChannel extends Document {
   status: string;
   lastStatusUpdate: Date;
   isActive: boolean;
+  webhooks: IWebhook[];
   createdAt: Date;
   updatedAt: Date;
 }

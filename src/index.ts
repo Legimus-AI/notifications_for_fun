@@ -42,6 +42,14 @@ app.get('/', (req: express.Request, res: express.Response) => {
   res.send('Hello World!');
 });
 
+app.get('/health', (req: express.Request, res: express.Response) => {
+  res.status(200).json({
+    ok: true,
+    message: 'OK',
+    version: '1.0.0',
+  });
+});
+
 // Enable only in development HTTP request logger middleware
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
