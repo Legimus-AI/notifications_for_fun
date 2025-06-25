@@ -71,3 +71,4 @@ typings/
 .history/
 
 dist
+storage/

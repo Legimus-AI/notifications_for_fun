@@ -73,6 +73,7 @@ app.use(passport.initialize());
 app.use(compression());
 app.use(helmet());
 app.use(express.static('public'));
+app.use('/storage', express.static(path.join(__dirname, '../storage')));
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'html');
 

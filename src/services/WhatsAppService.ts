@@ -6,6 +6,10 @@ import makeWASocket, {
   AuthenticationCreds,
   initAuthCreds,
   Browsers,
+  downloadMediaMessage,
+  proto,
+  WAMessage,
+  getDevice,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -15,6 +19,9 @@ import {
 } from '../models/WhatsAppAuthState';
 import Channel from '../models/Channels';
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -24,7 +31,7 @@ export interface WhatsAppServiceEvents {
     status: string,
     lastDisconnect?: any,
   ) => void;
-  message: (channelId: string, message: any) => void;
+  message: (channelId: string, payload: any) => void;
   'message-status': (channelId: string, status: any) => void;
 }
 
@@ -385,13 +392,205 @@ export class WhatsAppService extends EventEmitter {
       // Skip if message is from us
       if (message.key.fromMe) continue;
 
-      console.log(`📨 Incoming message for ${channelId}:`, message);
+      console.log(
+        `📨 Incoming message for ${channelId}:`,
+        JSON.stringify(message, null, 2),
+      );
 
-      // Emit message event
-      this.emit('message', channelId, message);
+      // Format message to webhook payload format
+      const payload = await this.formatMessageToWebhookPayload(
+        channelId,
+        message,
+      );
+      console.log(JSON.stringify(payload, null, 2));
+
+      // Emit message event with formatted payload
+      this.emit('message', channelId, payload);
 
       // TODO: Save to NotificationLogs collection
       // await this.saveIncomingMessage(channelId, message);
+    }
+  }
+
+  /**
+   * Formats a Baileys message into a WhatsApp Cloud API-like webhook payload.
+   */
+  private async formatMessageToWebhookPayload(
+    channelId: string,
+    message: WAMessage,
+  ): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      return null;
+    }
+
+    const from = message.key.remoteJid;
+    const messageId = message.key.id;
+    const timestamp = message.messageTimestamp;
+    const contactName = message.pushName || from;
+
+    const payload: any = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: channelId,
+          changes: [
+            {
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: sock.user?.id.split(':')[0],
+                  phone_number_id: sock.user?.id,
+                },
+                contacts: [
+                  {
+                    profile: {
+                      name: contactName,
+                    },
+                    wa_id: from,
+                  },
+                ],
+                messages: [
+                  {
+                    from,
+                    id: messageId,
+                    timestamp,
+                  },
+                ],
+              },
+              field: 'messages',
+            },
+          ],
+        },
+      ],
+    };
+
+    const messageContent = message.message;
+    const messageContainer = payload.entry[0].changes[0].value.messages[0];
+    let contextInfo: proto.IContextInfo | null | undefined;
+
+    if (messageContent?.conversation) {
+      messageContainer.type = 'text';
+      messageContainer.text = { body: messageContent.conversation };
+    } else if (messageContent?.extendedTextMessage) {
+      messageContainer.type = 'text';
+      messageContainer.text = { body: messageContent.extendedTextMessage.text };
+      contextInfo = messageContent.extendedTextMessage.contextInfo;
+    } else if (messageContent?.imageMessage) {
+      messageContainer.type = 'image';
+      messageContainer.image = await this.extractMediaPayload(
+        channelId,
+        message,
+        'image',
+        messageContent.imageMessage,
+      );
+      contextInfo = messageContent.imageMessage.contextInfo;
+    } else if (messageContent?.videoMessage) {
+      messageContainer.type = 'video';
+      messageContainer.video = await this.extractMediaPayload(
+        channelId,
+        message,
+        'video',
+        messageContent.videoMessage,
+      );
+      contextInfo = messageContent.videoMessage.contextInfo;
+    } else if (messageContent?.audioMessage) {
+      messageContainer.type = 'audio';
+      messageContainer.audio = await this.extractMediaPayload(
+        channelId,
+        message,
+        'audio',
+        messageContent.audioMessage,
+      );
+      contextInfo = messageContent.audioMessage.contextInfo;
+    } else if (messageContent?.documentMessage) {
+      messageContainer.type = 'document';
+      messageContainer.document = await this.extractMediaPayload(
+        channelId,
+        message,
+        'document',
+        messageContent.documentMessage,
+      );
+      contextInfo = messageContent.documentMessage.contextInfo;
+    } else if (messageContent?.stickerMessage) {
+      messageContainer.type = 'sticker';
+      messageContainer.sticker = await this.extractMediaPayload(
+        channelId,
+        message,
+        'sticker',
+        messageContent.stickerMessage,
+      );
+      contextInfo = messageContent.stickerMessage.contextInfo;
+    } else {
+      messageContainer.type = 'unsupported';
+      messageContainer.errors = [
+        {
+          code: 501,
+          title: 'Unsupported message type',
+        },
+      ];
+    }
+
+    // Handle context for replies
+    if (contextInfo && contextInfo.stanzaId) {
+      messageContainer.context = {
+        from: contextInfo.participant,
+        id: contextInfo.stanzaId,
+        quotedMessage: contextInfo.quotedMessage,
+      };
+    }
+
+    return payload;
+  }
+
+  /**
+   * Extracts media from a message, saves it, and returns the media payload.
+   */
+  private async extractMediaPayload(
+    channelId: string,
+    message: WAMessage,
+    type: 'image' | 'video' | 'audio' | 'document' | 'sticker',
+    mediaMessage: any,
+  ): Promise<any> {
+    try {
+      const buffer = await downloadMediaMessage(message, 'buffer', {});
+      const fileExtension = mediaMessage.mimetype.split('/')[1].split(';')[0];
+      const fileName = `${uuidv4()}.${fileExtension}`;
+
+      const storagePath = path.join(__dirname, `../../storage/${channelId}`);
+      if (!fs.existsSync(storagePath)) {
+        fs.mkdirSync(storagePath, { recursive: true });
+      }
+
+      const filePath = path.join(storagePath, fileName);
+      await fs.promises.writeFile(filePath, buffer);
+
+      const url = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+
+      const payload: any = {
+        mime_type: mediaMessage.mimetype,
+        url: url,
+        // sha256: mediaMessage.fileSha256.toString('base64'),
+        // file_length: mediaMessage.fileLength,
+      };
+
+      if ('caption' in mediaMessage) {
+        payload.caption = mediaMessage.caption;
+      }
+
+      if ('fileName' in mediaMessage) {
+        payload.filename = mediaMessage.fileName;
+      }
+
+      return payload;
+    } catch (error) {
+      console.error(
+        `❌ Error downloading media for message ${message.key.id}:`,
+        error,
+      );
+      return {
+        error: 'Failed to download media',
+      };
     }
   }
 
