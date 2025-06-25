@@ -823,6 +823,121 @@ export class WhatsAppService extends EventEmitter {
       console.error(`❌ Error clearing auth state for ${channelId}:`, error);
     }
   }
+
+  /**
+   * Sends a message using a format similar to the WhatsApp Cloud API.
+   * This handles both single and bulk messages.
+   */
+  async sendMessageFromApi(channelId: string, payload: any): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    let to = payload.to;
+    // check if to has @s.whatsapp.net
+    if (!to.includes('@s.whatsapp.net')) {
+      to = to + '@s.whatsapp.net';
+    }
+    if (!to) {
+      throw new Error('Recipient "to" is required');
+    }
+
+    let messageContent: any;
+
+    switch (payload.type) {
+      case 'text':
+        messageContent = { text: payload.text.body };
+        break;
+      case 'image':
+      case 'video':
+      case 'audio':
+      case 'document':
+        const mediaUrl = payload[payload.type].link;
+        const caption = payload[payload.type].caption;
+        if (!mediaUrl) {
+          throw new Error(
+            `"link" is required for media type "${payload.type}"`,
+          );
+        }
+        messageContent = {
+          [payload.type]: { url: mediaUrl },
+          caption: caption,
+        };
+        break;
+      default:
+        throw new Error(`Unsupported message type: "${payload.type}"`);
+    }
+
+    try {
+      const message = await sock.sendMessage(to, messageContent);
+      return message;
+    } catch (error) {
+      console.error(`❌ Error sending message from ${channelId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Checks if a given ID (JID) exists on WhatsApp.
+   */
+  async checkIdExists(
+    channelId: string,
+    jid: string,
+  ): Promise<{ exists: boolean; jid: string }> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+    const [result] = await sock.onWhatsApp(jid);
+    if (result) {
+      return { jid: result.jid, exists: !!result.exists };
+    }
+    return { exists: false, jid };
+  }
+
+  /**
+   * Fetches the status of a contact.
+   */
+  async fetchContactStatus(
+    channelId: string,
+    jid: string,
+  ): Promise<{ status: string; setAt: Date } | undefined> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+    try {
+      const status = await sock.fetchStatus(jid);
+      return status as any;
+    } catch (error) {
+      console.error(`❌ Error fetching status for ${jid}:`, error);
+      // It often fails if the user doesn't have a status or has privacy settings
+      return undefined;
+    }
+  }
+
+  /**
+   * Fetches the profile picture URL of a contact or group.
+   */
+  async fetchProfilePictureUrl(
+    channelId: string,
+    jid: string,
+    type: 'preview' | 'image' = 'preview',
+  ): Promise<string | undefined> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+    try {
+      const url = await sock.profilePictureUrl(jid, type);
+      return url;
+    } catch (error) {
+      console.error(`❌ Error fetching profile picture for ${jid}:`, error);
+      // This can fail if the user has no profile picture or due to privacy settings
+      return undefined;
+    }
+  }
 }
 
 // Singleton instance

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import bodyParser from 'body-parser';
 import morgan from 'morgan';
 import compression from 'compression';
@@ -14,26 +14,31 @@ import { createServer } from 'http';
 import { SocketService } from './services/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
 
+// =================================================================
+// ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
+// =================================================================
+
+// Catch unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Application specific logging, throwing an error, or other logic here
+  // It's often recommended to gracefully shut down in such cases
+});
+
+// Catch uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  // This is a critical error. The process is in an undefined state.
+  // It's not safe to continue. Perform synchronous cleanup and then shut down.
+  process.exit(1);
+});
+
 const app = express();
-
-// app.use((req: Request, res: Response, next: NextFunction) => {
-//   console.log("🐞 LOG HERE req:", req);
-
-//   // If there's an error in the request
-//   if (req.error) {
-//     return res.status(req.error.status || 422).json({ errors: req.error.array() });
-//   }
-
-//   // Other logic can be added here
-
-//   // Continue to the next middleware or route handler
-//   next();
-// });
 
 // Setup express server port from ENV, default: 3000
 app.set('port', process.env.PORT || 3000);
 
-app.get('/', (req, res) => {
+app.get('/', (req: express.Request, res: express.Response) => {
   res.send('Hello World!');
 });
 
@@ -42,15 +47,10 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// for parsing json
-// app.use(
-//   bodyParser.json({
-//     limit: '100mb',
-//   }),
-// );
+// For parsing json
+app.use(express.json({ limit: '100mb' }));
 
-app.use(express.json());
-// for parsing application/x-www-form-urlencoded
+// For parsing application/x-www-form-urlencoded
 app.use(
   bodyParser.urlencoded({
     limit: '100mb',
@@ -83,8 +83,43 @@ const httpServer = createServer(app);
 // Initialize Socket.io service
 let socketService: SocketService;
 
+// Load routes and then register error handlers
 loadRoutes().then((routes) => {
+  // Register API routes
   app.use('/api', routes);
+
+  // =================================================================
+  // ✨ NEW: Express Error Handling Middleware (must be after routes)
+  // =================================================================
+
+  // Handle 404 - Not Found
+  // This middleware is triggered when no other route matches
+  app.use((req, res, next) => {
+    const error: any = new Error(
+      'Not Found - The requested resource does not exist.',
+    );
+    error.status = 404;
+    next(error);
+  });
+
+  // Global Express Error Handler
+  // This middleware catches all errors passed by `next(error)`
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    // Log the error for debugging purposes
+    console.error(err);
+
+    // Set a default status code if one isn't already set on the error
+    const statusCode = err.status || 500;
+
+    // Send a structured error response
+    res.status(statusCode).json({
+      error: {
+        message: err.message || 'An unexpected internal server error occurred.',
+        // Optionally include the stack trace in development environment for easier debugging
+        ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+      },
+    });
+  });
 });
 
 const startServer = async () => {
@@ -113,38 +148,6 @@ const startServer = async () => {
         `🔌 Socket.io server ready on ws://localhost:${port}/socket.io/`,
       );
     });
-
-    // Graceful shutdown handling
-    const gracefulShutdown = async (signal: string) => {
-      console.log(`\n📥 Received ${signal}. Starting graceful shutdown...`);
-
-      try {
-        // Stop accepting new connections
-        httpServer.close(() => {
-          console.log('🔌 HTTP server closed');
-        });
-
-        // Cleanup WhatsApp connections
-        await whatsAppService.cleanup();
-        console.log('📱 WhatsApp service cleaned up');
-
-        // Cleanup Socket.io connections
-        if (socketService) {
-          await socketService.cleanup();
-          console.log('🔌 Socket.io service cleaned up');
-        }
-
-        console.log('✅ Graceful shutdown completed');
-        process.exit(0);
-      } catch (error) {
-        console.error('❌ Error during shutdown:', error);
-        process.exit(1);
-      }
-    };
-
-    // Handle shutdown signals
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);

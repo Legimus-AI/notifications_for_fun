@@ -35,14 +35,23 @@ const handleError = (
   res: Response,
   err: { code: number; message: string },
 ): void => {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(err);
+  try {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(err);
+    }
+    res.status(err?.code).json({
+      errors: {
+        msg: err?.message,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      errors: {
+        msg: 'Internal server error',
+      },
+    });
   }
-  res.status(err.code).json({
-    errors: {
-      msg: err.message,
-    },
-  });
 };
 
 const buildErrObject = (

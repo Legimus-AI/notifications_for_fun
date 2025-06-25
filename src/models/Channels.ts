@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import mongoosePaginate from 'mongoose-paginate-v2';
+import validator from 'validator';
 
 // whatsapp_automated specific config interface
 interface WhatsAppAutomatedConfig {
@@ -109,6 +110,33 @@ const ChannelSchema = new Schema(
       type: Boolean,
       default: true,
     },
+    webhooks: [
+      new Schema(
+        {
+          url: {
+            type: String,
+            required: true,
+          },
+          events: {
+            type: [String],
+            required: true,
+            enum: [
+              'message.received',
+              'message.sent',
+              'message.delivered',
+              'message.read',
+            ],
+          },
+          isActive: {
+            type: Boolean,
+            default: true,
+          },
+        },
+        {
+          versionKey: false,
+        },
+      ),
+    ],
   },
   {
     versionKey: false,

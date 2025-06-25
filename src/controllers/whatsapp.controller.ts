@@ -4,6 +4,8 @@ import * as utils from '../helpers/utils';
 import Channel from '../models/Channels';
 import { whatsAppService } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
+import { matchedData } from 'express-validator';
+import { handleError } from '../helpers/utils';
 
 // Type guard for WhatsApp config
 interface WhatsAppAutomatedConfig {
@@ -475,6 +477,113 @@ class WhatsAppController {
       });
     } catch (error) {
       utils.handleError(res, error);
+    }
+  };
+
+  /**
+   * Sends a message through a specific channel.
+   * The payload should be similar to the WhatsApp Cloud API.
+   */
+  public sendMessageFromApi = async (req: Request, res: Response) => {
+    try {
+      const { channelId } = req.params;
+      const payload = req.body;
+
+      const result = await whatsAppService.sendMessageFromApi(
+        channelId,
+        payload,
+      );
+
+      // Format response to match WhatsApp Cloud API
+      const wa_id = result.key.remoteJid.split('@')[0];
+      const formattedResponse = {
+        messaging_product: 'whatsapp',
+        contacts: [
+          {
+            input: payload.to, // Assuming 'to' is in the payload
+            wa_id: wa_id,
+          },
+        ],
+        messages: [
+          {
+            id: result.key.id,
+          },
+        ],
+      };
+
+      res.status(200).json(formattedResponse);
+    } catch (error) {
+      console.error('Error sending message via API:', error);
+      handleError(res, error);
+    }
+  };
+
+  /**
+   * Checks if a WhatsApp ID (JID) exists.
+   */
+  public checkContact = async (req: Request, res: Response) => {
+    try {
+      const { channelId, jid } = req.params;
+      const result = await whatsAppService.checkIdExists(channelId, jid);
+      res.status(200).json({
+        ok: true,
+        payload: result,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  };
+
+  /**
+   * Fetches the status of a WhatsApp contact.
+   */
+  public getContactStatus = async (req: Request, res: Response) => {
+    try {
+      const { channelId, jid } = req.params;
+      const result = await whatsAppService.fetchContactStatus(channelId, jid);
+      if (result) {
+        res.status(200).json({
+          ok: true,
+          payload: result,
+        });
+      } else {
+        handleError(res, {
+          code: 404,
+          message: 'Status not found or private.',
+        });
+      }
+    } catch (error) {
+      handleError(res, error);
+    }
+  };
+
+  /**
+   * Fetches the profile picture of a WhatsApp contact.
+   */
+  public getProfilePicture = async (req: Request, res: Response) => {
+    try {
+      const { channelId, jid } = req.params;
+      const { type } = req.query; // 'preview' or 'image'
+
+      const result = await whatsAppService.fetchProfilePictureUrl(
+        channelId,
+        jid,
+        type === 'image' ? 'image' : 'preview',
+      );
+
+      if (result) {
+        res.status(200).json({
+          ok: true,
+          payload: { url: result },
+        });
+      } else {
+        handleError(res, {
+          code: 404,
+          message: 'Profile picture not found or private.',
+        });
+      }
+    } catch (error) {
+      handleError(res, error);
     }
   };
 }
