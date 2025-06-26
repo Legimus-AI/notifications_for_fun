@@ -214,6 +214,11 @@ class WhatsAppService extends events_1.EventEmitter {
                 console.log(`🔄 Connecting WhatsApp channel: ${channelId}`);
                 // Update channel status
                 yield this.updateChannelStatus(channelId, 'connecting');
+                // Store phoneNumber in config if provided
+                if (phoneNumber) {
+                    yield this.updateChannelConfig(channelId, { phoneNumber });
+                    console.log(`📱 Stored phoneNumber for ${channelId}: ${phoneNumber}`);
+                }
                 // For new connections, clear existing auth state to avoid Binary conversion issues
                 const existingAuth = yield WhatsAppAuthState_1.WhatsAppAuthState.findOne({ channelId });
                 if (!existingAuth) {
@@ -221,14 +226,16 @@ class WhatsAppService extends events_1.EventEmitter {
                 }
                 // Create auth state
                 const auth = yield this.createMongoAuthState(channelId);
-                // Create socket
+                // Create socket with Chrome Windows simulation for anti-ban
+                // This simulates a real Chrome browser on Windows to reduce ban risk
                 const sock = (0, baileys_1.default)({
                     auth,
-                    browser: baileys_1.Browsers.ubuntu('Multi-Channel Notifications'),
+                    browser: baileys_1.Browsers.windows('WhatsApp Web'),
                     printQRInTerminal: false,
                     markOnlineOnConnect: false,
                     syncFullHistory: false,
                     defaultQueryTimeoutMs: 60000,
+                    emitOwnEvents: false,
                     // Implement cached group metadata to prevent rate limits and bans
                     cachedGroupMetadata: (jid) => __awaiter(this, void 0, void 0, function* () {
                         const cached = this.groupCache.get(jid);
@@ -299,7 +306,7 @@ class WhatsAppService extends events_1.EventEmitter {
      * Handles connection status updates
      */
     handleConnectionUpdate(channelId, update, phoneNumber) {
-        var _a, _b;
+        var _a, _b, _c;
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists before processing events
             if (!this.connections.has(channelId)) {
@@ -353,6 +360,20 @@ class WhatsAppService extends events_1.EventEmitter {
                 // Reset preload attempts on successful connection
                 this.preloadAttempts.delete(channelId);
                 this.lastPreloadAttempt.delete(channelId);
+                // Update channel config with phoneNumber if provided
+                if (phoneNumber) {
+                    yield this.updateChannelConfig(channelId, { phoneNumber });
+                }
+                // Get the connected phone number from Baileys and update config
+                const sock = this.connections.get(channelId);
+                if (sock && ((_c = sock.user) === null || _c === void 0 ? void 0 : _c.id)) {
+                    const connectedPhoneNumber = sock.user.id.split(':')[0];
+                    yield this.updateChannelConfig(channelId, {
+                        phoneNumber: connectedPhoneNumber,
+                        connectedAt: new Date(),
+                    });
+                    console.log(`📱 Captured connected phone number for ${channelId}: ${connectedPhoneNumber}`);
+                }
                 console.log(`📋 Group metadata caching enabled for ${channelId} - will cache on-demand to prevent rate limits (following Baileys best practices)`);
                 console.log(`ℹ️ Skipping aggressive group preloading to prevent rate-overlimit errors as recommended by Baileys documentation`);
             }
@@ -751,6 +772,28 @@ class WhatsAppService extends events_1.EventEmitter {
             }
             catch (error) {
                 console.error(`❌ Error updating channel status for ${channelId}:`, error);
+            }
+        });
+    }
+    /**
+     * Updates channel config with phoneNumber and other WhatsApp-specific data
+     */
+    updateChannelConfig(channelId, configUpdate) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const channel = yield Channels_1.default.findOne({ channelId });
+                if (channel) {
+                    // Merge the new config with existing config
+                    const updatedConfig = Object.assign(Object.assign({}, channel.config), configUpdate);
+                    yield Channels_1.default.findOneAndUpdate({ channelId }, {
+                        config: updatedConfig,
+                        lastStatusUpdate: new Date(),
+                    });
+                    console.log(`📝 Updated config for channel ${channelId}:`, configUpdate);
+                }
+            }
+            catch (error) {
+                console.error(`❌ Error updating channel config for ${channelId}:`, error);
             }
         });
     }
