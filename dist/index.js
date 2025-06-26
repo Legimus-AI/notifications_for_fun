@@ -28,6 +28,8 @@ const http_1 = require("http");
 const SocketService_1 = require("./services/SocketService");
 const WhatsAppService_1 = require("./services/WhatsAppService");
 const FileCleanupService_1 = require("./services/FileCleanupService");
+console.log('Env variables:', process.env);
+console.log('Env variables:', process.env.DOMAIN);
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
 // =================================================================

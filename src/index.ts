@@ -14,6 +14,9 @@ import { SocketService } from './services/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
 import { fileCleanupService } from './services/FileCleanupService';
 
+console.log('Env variables:', process.env);
+console.log('Env variables:', process.env.DOMAIN);
+
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
 // =================================================================
