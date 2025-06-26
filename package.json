@@ -1,9 +1,9 @@
 {
-  "name": "node-express-mongodb-jwt-rest-api-skeleton",
+  "name": "notifications_for_fun",
   "version": "9.0.5",
   "description": "Imagine and create",
   "scripts": {
-    "start": "cross-env NODE_ENV=production ts-node -r tsconfig-paths/register ./src/index.ts",
+    "start": "ts-node -r tsconfig-paths/register ./src/index.ts",
     "mocha": "nyc mocha --timeout=5000 --exit",
     "test": "npm run coverage:clean && npm run test:unit && npm run test:e2e && npm run coverage",
     "test:unit": "cross-env NODE_ENV=test jest --coverage",
