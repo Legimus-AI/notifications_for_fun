@@ -67,7 +67,6 @@ typings/
 
 # ignore production configuration
 .env.production
-
-.history/
 dist
+.history/
 storage/

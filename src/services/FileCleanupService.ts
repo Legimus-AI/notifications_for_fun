@@ -43,7 +43,6 @@ export class FileCleanupService {
         this.performCleanup();
       },
       {
-        scheduled: true,
         timezone: 'UTC',
       },
     );

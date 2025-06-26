@@ -1,1 +1,0 @@
-{"version":3,"file":"cities.controller.js","sourceRoot":"","sources":["../../src/controllers/cities.controller.ts"],"names":[],"mappings":";;;;;AAAA,8DAAqC;AACrC,sEAA8C;AAE9C,MAAM,gBAAiB,SAAQ,wBAAc;IAC3C;QACE,KAAK,CAAC,gBAAK,EAAE,CAAC,MAAM,CAAC,CAAC,CAAC;IACzB,CAAC;CACF;AAED,MAAM,UAAU,GAAG,IAAI,gBAAgB,EAAE,CAAC;AAE1C,kBAAe,UAAU,CAAC"}
