@@ -1,21 +1,10 @@
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import * as utils from '../helpers/utils';
-import Channel from '../models/Channels';
+import Channel, { WhatsAppAutomatedConfig } from '../models/Channels';
 import { whatsAppService } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
 import { handleError, formatJid } from '../helpers/utils';
-
-// Type guard for WhatsApp config
-interface WhatsAppAutomatedConfig {
-  phoneNumber: string;
-  authInfo?: {
-    creds?: any;
-    keys?: any;
-  };
-  qrCode?: string;
-  pairingCode?: string;
-}
 
 class WhatsAppController {
   /**

@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 import mongoosePaginate from 'mongoose-paginate-v2';
 
 // whatsapp_automated specific config interface
-interface WhatsAppAutomatedConfig {
+export interface WhatsAppAutomatedConfig {
   phoneNumber: string;
   authInfo?: {
     creds?: any;
@@ -10,6 +10,7 @@ interface WhatsAppAutomatedConfig {
   };
   qrCode?: string;
   pairingCode?: string;
+  connectedAt?: Date;
 }
 
 // Email specific config interface
