@@ -10,6 +10,7 @@
     "test:e2e": "cross-env NODE_ENV=test npm run fresh && npm run mocha",
     "dev": "cross-env NODE_ENV=development ts-node-dev --respawn --pretty --transpile-only -r tsconfig-paths/register ./src/index.ts",
     "tsc": "npx tsc",
+    "build": "tsc",
     "postinstall": "npm run tsc",
     "fresh": "npm run clean && npm run seed",
     "clean": "node clean.js",

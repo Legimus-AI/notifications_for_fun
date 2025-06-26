@@ -13,6 +13,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.socketService = void 0;
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
 const express_1 = __importDefault(require("express"));
 const body_parser_1 = __importDefault(require("body-parser"));
 const morgan_1 = __importDefault(require("morgan"));
@@ -130,7 +132,7 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         httpServer.listen(port, () => {
             console.log(`🚀 Server running on port ${port}`);
             console.log(`📱 WhatsApp service ready`);
-            console.log(`🔌 Socket.io server ready on ws://localhost:${port}/socket.io/`);
+            console.log(`🔌 Socket.io server ready on ws:// ${process.env.DOMAIN}:${port}/socket.io/`);
         });
         // Restore active WhatsApp channels
         console.log('🔄 Restoring active WhatsApp channels...');
