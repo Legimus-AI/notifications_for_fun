@@ -1,0 +1,1 @@
+{"version":3,"file":"notificationLogs.controller.js","sourceRoot":"","sources":["../../src/controllers/notificationLogs.controller.ts"],"names":[],"mappings":";;;;;AAAA,kFAA+C;AAC/C,sEAA8C;AAE9C,MAAM,uBAAwB,SAAQ,wBAAc;IAClD;QACE,KAAK,CAAC,0BAAK,EAAE,EAAE,CAAC,CAAC;IACnB,CAAC;CACF;AAED,MAAM,UAAU,GAAG,IAAI,uBAAuB,EAAE,CAAC;AAEjD,kBAAe,UAAU,CAAC"}
