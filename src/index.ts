@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import bodyParser from 'body-parser';
 import morgan from 'morgan';
@@ -141,7 +143,7 @@ const startServer = async () => {
       console.log(`🚀 Server running on port ${port}`);
       console.log(`📱 WhatsApp service ready`);
       console.log(
-        `🔌 Socket.io server ready on ws://localhost:${port}/socket.io/`,
+        `🔌 Socket.io server ready on ws:// ${process.env.DOMAIN}:${port}/socket.io/`,
       );
     });
 
