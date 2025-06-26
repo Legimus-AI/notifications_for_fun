@@ -13,6 +13,7 @@ import path from 'path';
 import { createServer } from 'http';
 import { SocketService } from './services/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
+import { fileCleanupService } from './services/FileCleanupService';
 
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
@@ -33,6 +34,33 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
+// Graceful shutdown handling
+const gracefulShutdown = (signal: string) => {
+  console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+  // Stop file cleanup service
+  console.log('🛑 Stopping file cleanup service...');
+  fileCleanupService.stop();
+
+  // Close HTTP server
+  httpServer.close(() => {
+    console.log('✅ HTTP server closed');
+    process.exit(0);
+  });
+
+  // Force exit after 10 seconds
+  setTimeout(() => {
+    console.error(
+      '❌ Could not close connections in time, forcefully shutting down',
+    );
+    process.exit(1);
+  }, 10000);
+};
+
+// Listen for termination signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 const app = express();
 
 // Setup express server port from ENV, default: 3000
@@ -46,7 +74,7 @@ app.get('/health', (req: express.Request, res: express.Response) => {
   res.status(200).json({
     ok: true,
     message: 'OK',
-    version: '1.0.0',
+    version: '1.0.1',
   });
 });
 
@@ -93,41 +121,7 @@ let socketService: SocketService;
 
 // Load routes and then register error handlers
 loadRoutes().then((routes) => {
-  // Register API routes
   app.use('/api', routes);
-
-  // =================================================================
-  // ✨ NEW: Express Error Handling Middleware (must be after routes)
-  // =================================================================
-
-  // Handle 404 - Not Found
-  // This middleware is triggered when no other route matches
-  app.use((req, res, next) => {
-    const error: any = new Error(
-      'Not Found - The requested resource does not exist.',
-    );
-    error.status = 404;
-    next(error);
-  });
-
-  // Global Express Error Handler
-  // This middleware catches all errors passed by `next(error)`
-  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-    // Log the error for debugging purposes
-    console.error(err);
-
-    // Set a default status code if one isn't already set on the error
-    const statusCode = err.status || 500;
-
-    // Send a structured error response
-    res.status(statusCode).json({
-      error: {
-        message: err.message || 'An unexpected internal server error occurred.',
-        // Optionally include the stack trace in development environment for easier debugging
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-      },
-    });
-  });
 });
 
 const startServer = async () => {
@@ -154,8 +148,15 @@ const startServer = async () => {
 
     // Restore active WhatsApp channels
     console.log('🔄 Restoring active WhatsApp channels...');
-    await whatsAppService.restoreActiveChannels();
+    if (process.env.NODE_ENV === 'production') {
+      await whatsAppService.restoreActiveChannels();
+    }
     console.log('✅ WhatsApp channels restoration completed');
+
+    // Start file cleanup service
+    console.log('🔄 Starting file cleanup service...');
+    fileCleanupService.start();
+    console.log('✅ File cleanup service started');
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
