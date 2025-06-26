@@ -9,7 +9,7 @@ export class SocketService {
   constructor(httpServer: HTTPServer) {
     this.io = new SocketIOServer(httpServer, {
       cors: {
-        origin: process.env.FRONTEND_URL || 'http://localhost:3030',
+        origin: process.env.FRONTEND_DOMAIN || 'http://localhost:3030',
         methods: ['GET', 'POST'],
         credentials: true,
       },
