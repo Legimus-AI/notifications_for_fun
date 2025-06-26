@@ -17,7 +17,7 @@ class SocketService {
         this.connectedClients = new Map(); // apiKeyId -> socketIds
         this.io = new socket_io_1.Server(httpServer, {
             cors: {
-                origin: process.env.FRONTEND_URL || 'http://localhost:3030',
+                origin: process.env.FRONTEND_DOMAIN || 'http://localhost:3030',
                 methods: ['GET', 'POST'],
                 credentials: true,
             },

@@ -306,7 +306,7 @@ socket.on('message_status_update', (data) => {
 
 ```env
 # Frontend URL for Socket.io CORS
-FRONTEND_URL=http://localhost:3000
+FRONTEND_DOMAIN=http://localhost:3000
 
 # MongoDB connection (already configured)
 MONGO_URI=mongodb://localhost:27017/your-database

@@ -91,7 +91,7 @@ const emailExistsExcludingMyself = (id, email) => __awaiter(void 0, void 0, void
 exports.emailExistsExcludingMyself = emailExistsExcludingMyself;
 const sendRegistrationEmailMessage = (user) => __awaiter(void 0, void 0, void 0, function* () {
     const subject = 'Verificar tu Email en el Sistema';
-    const htmlMessage = `<p>Hola ${user.name}.</p> <p>¡Bienvenido! Para verificar tu Email, por favor haz click en este enlace:</p> <p>${process.env.FRONTEND_URL}/verify/${user.verification}</p> <p>Gracias.</p>`;
+    const htmlMessage = `<p>Hola ${user.name}.</p> <p>¡Bienvenido! Para verificar tu Email, por favor haz click en este enlace:</p> <p>${process.env.FRONTEND_DOMAIN}/verify/${user.verification}</p> <p>Gracias.</p>`;
     prepareToSendEmail(user, subject, htmlMessage);
 });
 exports.sendRegistrationEmailMessage = sendRegistrationEmailMessage;
