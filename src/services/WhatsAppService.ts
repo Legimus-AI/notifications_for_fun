@@ -244,6 +244,12 @@ export class WhatsAppService extends EventEmitter {
       // Update channel status
       await this.updateChannelStatus(channelId, 'connecting');
 
+      // Store phoneNumber in config if provided
+      if (phoneNumber) {
+        await this.updateChannelConfig(channelId, { phoneNumber });
+        console.log(`📱 Stored phoneNumber for ${channelId}: ${phoneNumber}`);
+      }
+
       // For new connections, clear existing auth state to avoid Binary conversion issues
       const existingAuth = await WhatsAppAuthState.findOne({ channelId });
       if (!existingAuth) {
@@ -416,6 +422,24 @@ export class WhatsAppService extends EventEmitter {
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);
       this.lastPreloadAttempt.delete(channelId);
+
+      // Update channel config with phoneNumber if provided
+      if (phoneNumber) {
+        await this.updateChannelConfig(channelId, { phoneNumber });
+      }
+
+      // Get the connected phone number from Baileys and update config
+      const sock = this.connections.get(channelId);
+      if (sock && sock.user?.id) {
+        const connectedPhoneNumber = sock.user.id.split(':')[0];
+        await this.updateChannelConfig(channelId, {
+          phoneNumber: connectedPhoneNumber,
+          connectedAt: new Date(),
+        });
+        console.log(
+          `📱 Captured connected phone number for ${channelId}: ${connectedPhoneNumber}`,
+        );
+      }
 
       console.log(
         `📋 Group metadata caching enabled for ${channelId} - will cache on-demand to prevent rate limits (following Baileys best practices)`,
@@ -914,6 +938,40 @@ export class WhatsAppService extends EventEmitter {
     } catch (error) {
       console.error(
         `❌ Error updating channel status for ${channelId}:`,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Updates channel config with phoneNumber and other WhatsApp-specific data
+   */
+  private async updateChannelConfig(
+    channelId: string,
+    configUpdate: Partial<any>,
+  ): Promise<void> {
+    try {
+      const channel = await Channel.findOne({ channelId });
+      if (channel) {
+        // Merge the new config with existing config
+        const updatedConfig = { ...channel.config, ...configUpdate };
+
+        await Channel.findOneAndUpdate(
+          { channelId },
+          {
+            config: updatedConfig,
+            lastStatusUpdate: new Date(),
+          },
+        );
+
+        console.log(
+          `📝 Updated config for channel ${channelId}:`,
+          configUpdate,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `❌ Error updating channel config for ${channelId}:`,
         error,
       );
     }
