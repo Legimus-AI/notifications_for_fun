@@ -132,7 +132,7 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         httpServer.listen(port, () => {
             console.log(`🚀 Server running on port ${port}`);
             console.log(`📱 WhatsApp service ready`);
-            console.log(`🔌 Socket.io server ready on ws:// ${process.env.DOMAIN}:${port}/socket.io/`);
+            console.log(`🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`);
         });
         // Restore active WhatsApp channels
         console.log('🔄 Restoring active WhatsApp channels...');
