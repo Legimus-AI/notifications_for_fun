@@ -261,14 +261,16 @@ export class WhatsAppService extends EventEmitter {
       // Create auth state
       const auth = await this.createMongoAuthState(channelId);
 
-      // Create socket
+      // Create socket with Chrome Windows simulation for anti-ban
+      // This simulates a real Chrome browser on Windows to reduce ban risk
       const sock = makeWASocket({
         auth,
-        browser: Browsers.ubuntu('Multi-Channel Notifications'),
+        browser: Browsers.windows('WhatsApp Web'),
         printQRInTerminal: false,
-        markOnlineOnConnect: false,
-        syncFullHistory: false,
+        markOnlineOnConnect: false, // Critical: prevents auto online status
+        syncFullHistory: false, // Reduces bandwidth and suspicion
         defaultQueryTimeoutMs: 60000,
+        emitOwnEvents: false, // Don't emit events for own messages
         // Implement cached group metadata to prevent rate limits and bans
         cachedGroupMetadata: async (jid) => {
           const cached = this.groupCache.get(jid);
