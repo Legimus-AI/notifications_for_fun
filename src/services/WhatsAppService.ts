@@ -682,7 +682,7 @@ export class WhatsAppService extends EventEmitter {
       const filePath = path.join(storagePath, fileName);
       await fs.promises.writeFile(filePath, buffer);
 
-      const url = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+      const url = `${process.env.BACKEND_DOMAIN}/storage/${channelId}/${fileName}`;
 
       const payload: any = {
         mime_type: mediaMessage.mimetype,
@@ -1152,7 +1152,7 @@ export class WhatsAppService extends EventEmitter {
       await fs.promises.writeFile(filePath, buffer);
 
       // Return the public URL
-      const publicUrl = `${process.env.DOMAIN}/storage/${channelId}/${fileName}`;
+      const publicUrl = `${process.env.BACKEND_DOMAIN}/storage/${channelId}/${fileName}`;
 
       console.log(`📸 Profile picture saved for ${jid}: ${publicUrl}`);
       return publicUrl;
