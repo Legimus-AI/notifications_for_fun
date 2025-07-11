@@ -291,6 +291,7 @@ class WhatsAppController {
           isActive: channel.isActive,
           phoneNumber: (channel.config as WhatsAppAutomatedConfig)?.phoneNumber,
           createdAt: channel.createdAt,
+          webhooks: channel.webhooks,
         };
       });
 
