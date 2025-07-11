@@ -19,6 +19,7 @@ import {
   WhatsAppAuthKey,
 } from '../models/WhatsAppAuthState';
 import Channel from '../models/Channels';
+import WhatsAppEvents from '../models/WhatsAppEvents';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
@@ -477,6 +478,8 @@ export class WhatsAppService extends EventEmitter {
     if (type !== 'notify') return;
 
     for (const message of messages) {
+      await WhatsAppEvents.create({ channelId, payload: message });
+
       // Skip if message is from us
       if (message.key.fromMe) continue;
 
@@ -491,6 +494,7 @@ export class WhatsAppService extends EventEmitter {
         message,
       );
       console.log(JSON.stringify(payload, null, 2));
+
 
       // Emit message event with formatted payload
       this.emit('message', channelId, payload);
@@ -1017,7 +1021,7 @@ export class WhatsAppService extends EventEmitter {
    * This method is kept for backward compatibility but should not be used.
    * See: https://baileys.wiki/docs/socket/configuration#cachedgroupmetadata
    */
-  async preloadGroupMetadata(channelId: string): Promise<void> {
+  async preloadGroupMetadata(): Promise<void> {
     console.warn(
       `⚠️ preloadGroupMetadata is deprecated - Baileys handles group metadata caching automatically to prevent rate limits`,
     );
@@ -1073,7 +1077,7 @@ export class WhatsAppService extends EventEmitter {
       case 'image':
       case 'video':
       case 'audio':
-      case 'document':
+      case 'document': {
         const mediaUrl = payload[payload.type].link;
         const caption = payload[payload.type].caption;
         if (!mediaUrl) {
@@ -1086,6 +1090,7 @@ export class WhatsAppService extends EventEmitter {
           caption: caption,
         };
         break;
+      }
       default:
         throw new Error(`Unsupported message type: "${payload.type}"`);
     }
