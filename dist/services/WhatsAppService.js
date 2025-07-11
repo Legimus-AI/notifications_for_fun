@@ -41,6 +41,7 @@ const qrcode_1 = __importDefault(require("qrcode"));
 const node_cache_1 = __importDefault(require("node-cache"));
 const WhatsAppAuthState_1 = require("../models/WhatsAppAuthState");
 const Channels_1 = __importDefault(require("../models/Channels"));
+const WhatsAppEvents_1 = __importDefault(require("../models/WhatsAppEvents"));
 const events_1 = require("events");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
@@ -395,6 +396,7 @@ class WhatsAppService extends events_1.EventEmitter {
             if (type !== 'notify')
                 return;
             for (const message of messages) {
+                yield WhatsAppEvents_1.default.create({ channelId, payload: message });
                 // Skip if message is from us
                 if (message.key.fromMe)
                     continue;
@@ -834,7 +836,7 @@ class WhatsAppService extends events_1.EventEmitter {
      * This method is kept for backward compatibility but should not be used.
      * See: https://baileys.wiki/docs/socket/configuration#cachedgroupmetadata
      */
-    preloadGroupMetadata(channelId) {
+    preloadGroupMetadata() {
         return __awaiter(this, void 0, void 0, function* () {
             console.warn(`⚠️ preloadGroupMetadata is deprecated - Baileys handles group metadata caching automatically to prevent rate limits`);
             console.warn(`ℹ️ See: https://baileys.wiki/docs/socket/configuration#cachedgroupmetadata`);
@@ -884,7 +886,7 @@ class WhatsAppService extends events_1.EventEmitter {
                 case 'image':
                 case 'video':
                 case 'audio':
-                case 'document':
+                case 'document': {
                     const mediaUrl = payload[payload.type].link;
                     const caption = payload[payload.type].caption;
                     if (!mediaUrl) {
@@ -895,6 +897,7 @@ class WhatsAppService extends events_1.EventEmitter {
                         caption: caption,
                     };
                     break;
+                }
                 default:
                     throw new Error(`Unsupported message type: "${payload.type}"`);
             }

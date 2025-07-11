@@ -268,6 +268,7 @@ class WhatsAppController {
                         isActive: channel.isActive,
                         phoneNumber: (_a = channel.config) === null || _a === void 0 ? void 0 : _a.phoneNumber,
                         createdAt: channel.createdAt,
+                        webhooks: channel.webhooks,
                     };
                 });
                 res.status(200).json({
