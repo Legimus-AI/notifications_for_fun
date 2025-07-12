@@ -37,6 +37,7 @@ export interface WhatsAppServiceEvents {
   ) => void;
   message: (channelId: string, payload: any) => void;
   'message-status': (channelId: string, status: any) => void;
+  call: (channelId: string, payload: any) => void;
 }
 
 export class WhatsAppService extends EventEmitter {
@@ -345,6 +346,11 @@ export class WhatsAppService extends EventEmitter {
             );
           }
         }
+      });
+
+      // Handle incoming calls
+      sock.ev.on('call', async (callEvents) => {
+        await this.handleIncomingCalls(channelId, callEvents);
       });
     } catch (error) {
       console.error(`❌ Error connecting channel ${channelId}:`, error);
@@ -754,6 +760,66 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Formats a Baileys call event into a WhatsApp Cloud API-like webhook payload.
+   */
+  private async formatCallToWebhookPayload(
+    channelId: string,
+    callEvent: any,
+  ): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      return null;
+    }
+
+    const from = callEvent.from;
+    const callId = callEvent.id;
+    const timestamp = callEvent.date || Math.floor(Date.now() / 1000);
+    const status = callEvent.status; // 'offer', 'accept', 'reject', 'timeout'
+    const isVideo = callEvent.isVideo || false;
+    const isGroup = callEvent.isGroup || false;
+
+    const payload: any = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: channelId,
+          changes: [
+            {
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: sock.user?.id.split(':')[0],
+                  phone_number_id: sock.user?.id,
+                },
+                statuses: [
+                  {
+                    id: callId,
+                    status: 'call_received',
+                    timestamp: timestamp,
+                    recipient_id: sock.user?.id.split(':')[0],
+                    call: {
+                      from: removeSuffixFromJid(from),
+                      status: status,
+                      type: isVideo ? 'video' : 'voice',
+                      is_group: isGroup,
+                      call_id: callId,
+                    },
+                  },
+                ],
+              },
+              field: 'call_status',
+            },
+          ],
+        },
+      ],
+    };
+
+    console.log(`📞 Formatted call event for ${channelId}: ${status} ${isVideo ? 'video' : 'voice'} call from ${from}`);
+
+    return payload;
+  }
+
+  /**
    * Handles message status updates (sent, delivered, read)
    */
   private async handleMessageStatusUpdates(channelId: string, updates: any[]) {
@@ -773,6 +839,37 @@ export class WhatsAppService extends EventEmitter {
 
       // TODO: Update NotificationLogs collection
       // await this.updateMessageStatus(channelId, update);
+    }
+  }
+
+  /**
+   * Handles incoming calls
+   */
+  private async handleIncomingCalls(channelId: string, callEvents: any[]) {
+    // Check if channel still exists before processing events
+    if (!this.connections.has(channelId)) {
+      console.log(
+        `⚠️ Ignoring incoming call for deleted channel: ${channelId}`,
+      );
+      return;
+    }
+
+    for (const callEvent of callEvents) {
+      console.log(`📞 Incoming call for ${channelId}:`, JSON.stringify(callEvent, null, 2));
+
+      // Save call event to database
+      await WhatsAppEvents.create({ channelId, payload: callEvent });
+
+      // Format call event to webhook payload format
+      const payload = await this.formatCallToWebhookPayload(channelId, callEvent);
+      console.log("Call payload formatted:", JSON.stringify(payload, null, 2));
+      if (payload) {
+        // Emit call event
+        this.emit('call', channelId, payload);
+
+        // Send to webhooks
+        this.sendToWebhooks(channelId, 'call.received', payload);
+      }
     }
   }
 
