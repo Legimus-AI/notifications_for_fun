@@ -163,19 +163,28 @@ export class SocketService {
     });
 
     // Listen for message status updates
-    whatsAppService.on('message-status', (channelId: string, status: any) => {
+    whatsAppService.on('message-status', (channelId: string, payload: any) => {
       console.log(`📨 Message status update for channel: ${channelId}`);
 
-      const statusData = {
-        channelId,
-        messageId: status.key.id,
-        status: status.update,
-        timestamp: new Date().toISOString(),
-      };
+      // Extract data from WhatsApp Cloud API formatted payload
+      const statusInfo = payload.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
 
-      this.io
-        .to(`channel_${channelId}`)
-        .emit('message_status_update', statusData);
+      if (statusInfo) {
+        const statusData = {
+          channelId,
+          messageId: statusInfo.id,
+          status: statusInfo.status,
+          recipient_id: statusInfo.recipient_id,
+          timestamp: statusInfo.timestamp || Math.floor(Date.now() / 1000),
+          conversation: statusInfo.conversation, // For read receipts
+        };
+
+        this.io
+          .to(`channel_${channelId}`)
+          .emit('message_status_update', statusData);
+      } else {
+        console.warn(`⚠️ Invalid status payload format for channel ${channelId}`);
+      }
     });
   }
 
