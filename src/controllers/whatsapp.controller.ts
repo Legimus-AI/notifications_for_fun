@@ -8,6 +8,13 @@ import { handleError, formatJid } from '../helpers/utils';
 
 class WhatsAppController {
   /**
+   * Generates a unique trace ID for error tracking
+   */
+  private generateTraceId(): string {
+    return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
    * Creates a new WhatsApp channel
    */
   public createChannel = async (req: Request, res: Response): Promise<void> => {
@@ -512,6 +519,31 @@ class WhatsAppController {
       const { channelId } = req.params;
       const payload = req.body;
 
+      // Validate required fields
+      if (!payload.to) {
+        return res.status(400).json({
+          error: {
+            message: 'Parameter "to" is required',
+            type: 'OAuthException',
+            code: 131021,
+            error_subcode: 2490003,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
+      if (!payload.type) {
+        return res.status(400).json({
+          error: {
+            message: 'Parameter "type" is required',
+            type: 'OAuthException',
+            code: 131021,
+            error_subcode: 2490003,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
       const result = await whatsAppService.sendMessageFromApi(
         channelId,
         payload,
@@ -536,7 +568,58 @@ class WhatsAppController {
 
       res.status(200).json(formattedResponse);
     } catch (error) {
-      console.error('Error sending message via API:', error);
+                  console.error('Error sending message via API:', error);
+
+      // Handle specific validation errors with WhatsApp Cloud API format
+      if (error.message.includes('not registered on WhatsApp')) {
+        return res.status(400).json({
+          error: {
+            message: error.message,
+            type: 'OAuthException',
+            code: 131026,
+            error_subcode: 2490011,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
+      if (error.message.includes('Failed to validate phone number')) {
+        return res.status(400).json({
+          error: {
+            message: error.message,
+            type: 'OAuthException',
+            code: 131021,
+            error_subcode: 2490003,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
+      if (error.message.includes('is not connected')) {
+        return res.status(400).json({
+          error: {
+            message: error.message,
+            type: 'OAuthException',
+            code: 131005,
+            error_subcode: 2490004,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
+      if (error.message.includes('Unsupported message type')) {
+        return res.status(400).json({
+          error: {
+            message: error.message,
+            type: 'OAuthException',
+            code: 131009,
+            error_subcode: 2490005,
+            fbtrace_id: this.generateTraceId(),
+          },
+        });
+      }
+
+      // Default error handling for other errors
       handleError(res, error);
     }
   };

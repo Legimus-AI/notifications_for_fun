@@ -44,6 +44,7 @@ export class WhatsAppService extends EventEmitter {
   private connections: Map<string, WASocket> = new Map();
   private connectionStatus: Map<string, string> = new Map();
   private groupCache: NodeCache;
+  private phoneValidationCache: NodeCache;
   private preloadAttempts: Map<string, number> = new Map(); // Track preload attempts per channel
   private lastPreloadAttempt: Map<string, number> = new Map(); // Track last preload timestamp
 
@@ -55,6 +56,14 @@ export class WhatsAppService extends EventEmitter {
     this.groupCache = new NodeCache({
       stdTTL: 3600, // 1 hour
       checkperiod: 300, // Check for expired keys every 5 minutes
+      useClones: false, // Don't clone objects for better performance
+    });
+
+    // Initialize phone number validation cache
+    // Cache for 24 hours (86400 seconds) with automatic cleanup every 1 hour
+    this.phoneValidationCache = new NodeCache({
+      stdTTL: 86400, // 24 hours
+      checkperiod: 3600, // Check for expired keys every 1 hour
       useClones: false, // Don't clone objects for better performance
     });
   }
@@ -1109,6 +1118,9 @@ export class WhatsAppService extends EventEmitter {
       // Clear auth state if it exists
       await this.clearAuthState(channelId);
 
+      // Clear phone validation cache for this channel
+      this.clearPhoneValidationCache(channelId);
+
       console.log(
         `✅ Channel ${channelId} removed from WhatsApp service memory`,
       );
@@ -1237,6 +1249,9 @@ export class WhatsAppService extends EventEmitter {
     // Clear all cached group metadata
     this.clearGroupCache();
 
+    // Clear phone validation cache
+    this.clearPhoneValidationCache();
+
     // Clear all tracking maps
     this.preloadAttempts.clear();
     this.lastPreloadAttempt.clear();
@@ -1291,6 +1306,90 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Clears phone validation cache for a specific channel or all channels
+   */
+  clearPhoneValidationCache(channelId?: string): void {
+    if (channelId) {
+      // Clear cache entries for specific channel
+      const keys = this.phoneValidationCache.keys();
+      const channelKeys = keys.filter(key => key.startsWith(`${channelId}:`));
+      this.phoneValidationCache.del(channelKeys);
+      console.log(`🧹 Cleared phone validation cache for channel: ${channelId} (${channelKeys.length} entries)`);
+    } else {
+      // Clear all cached phone validations
+      const totalKeys = this.phoneValidationCache.keys().length;
+      this.phoneValidationCache.flushAll();
+      console.log(`🧹 Cleared all phone validation cache (${totalKeys} entries)`);
+    }
+  }
+
+  /**
+   * Invalidates cache for a specific phone number
+   */
+  invalidatePhoneValidation(channelId: string, phoneNumber: string): void {
+    const cacheKey = `${channelId}:${phoneNumber}`;
+    const wasDeleted = this.phoneValidationCache.del(cacheKey);
+    if (wasDeleted) {
+      console.log(`🗑️ Invalidated phone validation cache for: ${phoneNumber}`);
+    } else {
+      console.log(`ℹ️ No cache entry found for phone number: ${phoneNumber}`);
+    }
+  }
+
+  /**
+   * Gets phone validation cache statistics
+   */
+  getPhoneValidationCacheStats(): { totalKeys: number; hits: number; misses: number; keys: string[] } {
+    const stats = this.phoneValidationCache.getStats();
+    return {
+      totalKeys: this.phoneValidationCache.keys().length,
+      hits: stats.hits,
+      misses: stats.misses,
+      keys: this.phoneValidationCache.keys(),
+    };
+  }
+
+  /**
+   * Validates a phone number with caching to prevent repeated validations
+   */
+  private async validatePhoneNumberWithCache(channelId: string, phoneNumber: string): Promise<void> {
+    const cacheKey = `${channelId}:${phoneNumber}`;
+
+    // Check if validation result is cached
+    const cachedResult = this.phoneValidationCache.get<boolean>(cacheKey);
+
+    if (cachedResult !== undefined) {
+      console.log(`📋 Using cached validation for ${phoneNumber}: ${cachedResult ? 'valid' : 'invalid'}`);
+      if (!cachedResult) {
+        throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+      }
+      return;
+    }
+
+    // Perform validation if not cached
+    console.log(`🔍 Validating phone number: ${phoneNumber} (not in cache)`);
+    try {
+      const validation = await this.checkIdExists(channelId, phoneNumber);
+
+      // Cache the validation result
+      this.phoneValidationCache.set(cacheKey, validation.exists);
+
+      if (!validation.exists) {
+        console.log(`❌ Phone number ${phoneNumber} is not registered on WhatsApp (cached for future use)`);
+        throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+      }
+
+      console.log(`✅ Phone number ${phoneNumber} is valid on WhatsApp (cached for future use)`);
+    } catch (error) {
+      if (error.message.includes('not registered on WhatsApp')) {
+        throw error; // Re-throw our custom error
+      }
+      console.error(`❌ Error validating phone number ${phoneNumber}:`, error);
+      throw new Error(`Failed to validate phone number ${phoneNumber}. Please check the number format and try again.`);
+    }
+  }
+
+  /**
    * Sends a message using a format similar to the WhatsApp Cloud API.
    * This handles both single and bulk messages, including replies with context.
    */
@@ -1301,6 +1400,8 @@ export class WhatsAppService extends EventEmitter {
     }
 
     let to = payload.to;
+    const originalNumber = to; // Store original for validation
+
     // check if to has @s.whatsapp.net
     if (!to.includes('@s.whatsapp.net')) {
       to = to + '@s.whatsapp.net';
@@ -1308,6 +1409,9 @@ export class WhatsAppService extends EventEmitter {
     if (!to) {
       throw new Error('Recipient "to" is required');
     }
+
+    // Validate phone number exists on WhatsApp (with caching)
+    await this.validatePhoneNumberWithCache(channelId, originalNumber);
 
     let messageContent: any;
 
