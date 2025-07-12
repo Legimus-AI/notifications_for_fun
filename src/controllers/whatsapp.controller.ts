@@ -384,6 +384,40 @@ class WhatsAppController {
   };
 
   /**
+   * Refreshes QR code for an existing channel (when logged out or QR expired)
+   */
+  public refreshQR = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+
+      // Find channel
+      const channel = await Channel.findOne({ channelId });
+      if (!channel) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'),
+        );
+      }
+
+      // Check current status
+      const currentStatus = whatsAppService.getChannelStatus(channelId);
+      console.log(`🔄 Refreshing QR for channel ${channelId}, current status: ${currentStatus}`);
+
+      // Refresh QR code
+      await whatsAppService.refreshQRCode(channelId);
+
+      res.status(200).json({
+        ok: true,
+        message: 'QR code refresh initiated',
+        channelId,
+        status: 'generating_qr',
+      });
+    } catch (error) {
+      utils.handleError(res, error);
+    }
+  };
+
+  /**
    * Deletes a WhatsApp channel completely
    */
   public deleteChannel = async (req: Request, res: Response): Promise<void> => {
@@ -551,7 +585,8 @@ class WhatsAppController {
    */
   public getProfilePicture = async (req: Request, res: Response) => {
     try {
-      let { channelId, jid } = req.params;
+      const { channelId } = req.params;
+      let { jid } = req.params;
       console.log('Original jid:', jid);
       jid = formatJid(jid);
       console.log('Formatted jid:', jid);

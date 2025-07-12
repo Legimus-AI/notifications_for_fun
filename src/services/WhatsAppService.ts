@@ -25,6 +25,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
+import { removeSuffixFromJid } from '@/helpers/utils';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -379,6 +380,10 @@ export class WhatsAppService extends EventEmitter {
       // Generate QR code
       const qrDataURL = await QRCode.toDataURL(qr);
       await this.updateChannelStatus(channelId, 'qr_ready');
+
+      // Store QR code in channel config
+      await this.updateChannelConfig(channelId, { qrCode: qrDataURL });
+
       this.emit('qr', channelId, qrDataURL);
     }
 
@@ -594,12 +599,12 @@ export class WhatsAppService extends EventEmitter {
                     profile: {
                       name: contactName,
                     },
-                    wa_id: from,
+                    wa_id: removeSuffixFromJid(from),
                   },
                 ],
                 messages: [
                   {
-                    from,
+                    from: removeSuffixFromJid(from),
                     id: messageId,
                     timestamp,
                   },
@@ -980,6 +985,48 @@ export class WhatsAppService extends EventEmitter {
         `❌ Error updating channel config for ${channelId}:`,
         error,
       );
+    }
+  }
+
+  /**
+   * Refreshes QR code for an existing channel by clearing auth state and reconnecting
+   */
+  async refreshQRCode(channelId: string): Promise<void> {
+    try {
+      console.log(`🔄 Refreshing QR code for channel: ${channelId}`);
+
+      // Step 1: Disconnect current connection if exists
+      const currentConnection = this.connections.get(channelId);
+      if (currentConnection) {
+        console.log(`🔌 Disconnecting current connection for ${channelId}`);
+        try {
+          await currentConnection.logout();
+        } catch (error) {
+          console.warn(`⚠️ Error during logout for ${channelId}:`, error);
+        }
+        this.connections.delete(channelId);
+      }
+
+      // Step 2: Clear auth state to force fresh QR generation
+      console.log(`🧹 Clearing auth state for ${channelId} to generate fresh QR`);
+      await this.clearAuthState(channelId);
+
+      // Step 3: Update channel status
+      await this.updateChannelStatus(channelId, 'generating_qr');
+      this.connectionStatus.set(channelId, 'generating_qr');
+
+      // Step 4: Clear any cached config QR code
+      await this.updateChannelConfig(channelId, { qrCode: null });
+
+      // Step 5: Reconnect to generate new QR code
+      console.log(`🔄 Starting fresh connection for ${channelId}`);
+      await this.connectChannel(channelId);
+
+      console.log(`✅ QR refresh initiated for channel: ${channelId}`);
+    } catch (error) {
+      console.error(`❌ Error refreshing QR code for ${channelId}:`, error);
+      await this.updateChannelStatus(channelId, 'error');
+      throw error;
     }
   }
 

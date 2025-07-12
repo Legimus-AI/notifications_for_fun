@@ -12,6 +12,7 @@
     "tsc": "npx tsc",
     "build": "tsc",
     "postinstall": "npm run tsc",
+    "build": "npm run tsc",
     "fresh": "npm run clean && npm run seed",
     "clean": "node clean.js",
     "prettier": "prettier --write --config .prettierrc.json \"**/*.js\"",
