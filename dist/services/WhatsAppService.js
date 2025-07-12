@@ -62,6 +62,13 @@ class WhatsAppService extends events_1.EventEmitter {
             checkperiod: 300,
             useClones: false, // Don't clone objects for better performance
         });
+        // Initialize phone number validation cache
+        // Cache for 24 hours (86400 seconds) with automatic cleanup every 1 hour
+        this.phoneValidationCache = new node_cache_1.default({
+            stdTTL: 86400,
+            checkperiod: 3600,
+            useClones: false, // Don't clone objects for better performance
+        });
     }
     /**
      * Restores all active channels on server restart
@@ -295,6 +302,10 @@ class WhatsAppService extends events_1.EventEmitter {
                             console.error(`❌ Error caching group metadata update for ${update.id}:`, error);
                         }
                     }
+                }));
+                // Handle incoming calls
+                sock.ev.on('call', (callEvents) => __awaiter(this, void 0, void 0, function* () {
+                    yield this.handleIncomingCalls(channelId, callEvents);
                 }));
             }
             catch (error) {
@@ -541,6 +552,14 @@ class WhatsAppService extends events_1.EventEmitter {
                 messageContainer.sticker = yield this.extractMediaPayload(channelId, message, 'sticker', messageContent.stickerMessage);
                 contextInfo = messageContent.stickerMessage.contextInfo;
             }
+            else if (messageContent === null || messageContent === void 0 ? void 0 : messageContent.reactionMessage) {
+                messageContainer.type = 'reaction';
+                messageContainer.reaction = {
+                    message_id: messageContent.reactionMessage.key.id,
+                    emoji: messageContent.reactionMessage.text,
+                };
+                console.log(`👍 Reaction message detected: ${messageContent.reactionMessage.text} on message ${messageContent.reactionMessage.key.id}`);
+            }
             else {
                 messageContainer.type = 'unsupported';
                 messageContainer.errors = [
@@ -553,7 +572,7 @@ class WhatsAppService extends events_1.EventEmitter {
             // Handle context for replies
             if (contextInfo && contextInfo.stanzaId) {
                 messageContainer.context = {
-                    from: contextInfo.participant,
+                    from: (0, utils_1.removeSuffixFromJid)(contextInfo.participant),
                     id: contextInfo.stanzaId,
                     quotedMessage: contextInfo.quotedMessage,
                 };
@@ -600,9 +619,145 @@ class WhatsAppService extends events_1.EventEmitter {
         });
     }
     /**
+     * Formats a Baileys call event into a WhatsApp Cloud API-like webhook payload.
+     */
+    formatCallToWebhookPayload(channelId, callEvent) {
+        var _a, _b, _c;
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                return null;
+            }
+            const from = callEvent.from;
+            const callId = callEvent.id;
+            const timestamp = callEvent.date || Math.floor(Date.now() / 1000);
+            const status = callEvent.status; // 'offer', 'accept', 'reject', 'timeout'
+            const isVideo = callEvent.isVideo || false;
+            const isGroup = callEvent.isGroup || false;
+            const payload = {
+                object: 'whatsapp_business_account',
+                entry: [
+                    {
+                        id: channelId,
+                        changes: [
+                            {
+                                value: {
+                                    messaging_product: 'whatsapp',
+                                    metadata: {
+                                        display_phone_number: (_a = sock.user) === null || _a === void 0 ? void 0 : _a.id.split(':')[0],
+                                        phone_number_id: (_b = sock.user) === null || _b === void 0 ? void 0 : _b.id,
+                                    },
+                                    statuses: [
+                                        {
+                                            id: callId,
+                                            status: 'call_received',
+                                            timestamp: timestamp,
+                                            recipient_id: (_c = sock.user) === null || _c === void 0 ? void 0 : _c.id.split(':')[0],
+                                            call: {
+                                                from: (0, utils_1.removeSuffixFromJid)(from),
+                                                status: status,
+                                                type: isVideo ? 'video' : 'voice',
+                                                is_group: isGroup,
+                                                call_id: callId,
+                                            },
+                                        },
+                                    ],
+                                },
+                                field: 'call_status',
+                            },
+                        ],
+                    },
+                ],
+            };
+            console.log(`📞 Formatted call event for ${channelId}: ${status} ${isVideo ? 'video' : 'voice'} call from ${from}`);
+            return payload;
+        });
+    }
+    /**
+     * Formats a Baileys message status update into a WhatsApp Cloud API-like webhook payload.
+     */
+    formatStatusToWebhookPayload(channelId, statusUpdate) {
+        var _a, _b, _c;
+        return __awaiter(this, void 0, void 0, function* () {
+            const sock = this.connections.get(channelId);
+            if (!sock) {
+                return null;
+            }
+            const messageId = statusUpdate.key.id;
+            const to = statusUpdate.key.remoteJid;
+            const numericStatus = (_a = statusUpdate.update) === null || _a === void 0 ? void 0 : _a.status; // Baileys sends numeric status codes
+            const timestamp = statusUpdate.timestamp || Math.floor(Date.now() / 1000);
+            // Map Baileys numeric status codes to WhatsApp Cloud API status strings
+            // Based on actual behavior observed in logs:
+            // 0: pending/sent, 1: sent (server received), 2: sent, 3: delivered, 4: read
+            let webhookStatus;
+            switch (numericStatus) {
+                case 0:
+                    webhookStatus = 'sent';
+                    break;
+                case 1:
+                    webhookStatus = 'sent'; // Server received, treat as sent
+                    break;
+                case 2:
+                    webhookStatus = 'sent'; // Message sent
+                    break;
+                case 3:
+                    webhookStatus = 'delivered'; // Message delivered to recipient
+                    break;
+                case 4:
+                    webhookStatus = 'read'; // Message read by recipient
+                    break;
+                default:
+                    console.warn(`⚠️ Unknown status code ${numericStatus} for message ${messageId}`);
+                    webhookStatus = 'unknown';
+                    break;
+            }
+            const payload = {
+                object: 'whatsapp_business_account',
+                entry: [
+                    {
+                        id: channelId,
+                        changes: [
+                            {
+                                value: {
+                                    messaging_product: 'whatsapp',
+                                    metadata: {
+                                        display_phone_number: (_b = sock.user) === null || _b === void 0 ? void 0 : _b.id.split(':')[0],
+                                        phone_number_id: (_c = sock.user) === null || _c === void 0 ? void 0 : _c.id,
+                                    },
+                                    statuses: [
+                                        {
+                                            id: messageId,
+                                            status: webhookStatus,
+                                            timestamp: timestamp,
+                                            recipient_id: (0, utils_1.removeSuffixFromJid)(to),
+                                        },
+                                    ],
+                                },
+                                field: 'messages',
+                            },
+                        ],
+                    },
+                ],
+            };
+            // Add additional fields for read status
+            if (webhookStatus === 'read') {
+                payload.entry[0].changes[0].value.statuses[0].conversation = {
+                    id: (0, utils_1.removeSuffixFromJid)(to),
+                    origin: {
+                        type: 'user_initiated',
+                    },
+                };
+            }
+            console.log(`📊 Formatted status update for ${channelId}: ${webhookStatus} (code: ${numericStatus}) for message ${messageId}`);
+            return payload;
+        });
+    }
+    /**
      * Handles message status updates (sent, delivered, read)
      */
     handleMessageStatusUpdates(channelId, updates) {
+        var _a, _b, _c, _d;
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists before processing events
             if (!this.connections.has(channelId)) {
@@ -610,11 +765,56 @@ class WhatsAppService extends events_1.EventEmitter {
                 return;
             }
             for (const update of updates) {
-                console.log(`📊 Message status update for ${channelId}:`, update);
-                // Emit status update event
-                this.emit('message-status', channelId, update);
+                console.log(`📊 Message status update for ${channelId}:`, JSON.stringify(update, null, 2));
+                // Format status update to webhook payload format
+                const payload = yield this.formatStatusToWebhookPayload(channelId, update);
+                console.log("Status payload formatted:", JSON.stringify(payload, null, 2));
+                if (payload) {
+                    // Emit status update event
+                    this.emit('message-status', channelId, payload);
+                    // Determine webhook event type based on status from the formatted payload
+                    const webhookStatus = (_d = (_c = (_b = (_a = payload.entry[0]) === null || _a === void 0 ? void 0 : _a.changes[0]) === null || _b === void 0 ? void 0 : _b.value) === null || _c === void 0 ? void 0 : _c.statuses[0]) === null || _d === void 0 ? void 0 : _d.status;
+                    let webhookEventType = 'message.status';
+                    if (webhookStatus === 'sent') {
+                        webhookEventType = 'message.sent';
+                    }
+                    else if (webhookStatus === 'delivered') {
+                        webhookEventType = 'message.delivered';
+                    }
+                    else if (webhookStatus === 'read') {
+                        webhookEventType = 'message.read';
+                    }
+                    // Send to webhooks
+                    this.sendToWebhooks(channelId, webhookEventType, payload);
+                }
                 // TODO: Update NotificationLogs collection
                 // await this.updateMessageStatus(channelId, update);
+            }
+        });
+    }
+    /**
+     * Handles incoming calls
+     */
+    handleIncomingCalls(channelId, callEvents) {
+        return __awaiter(this, void 0, void 0, function* () {
+            // Check if channel still exists before processing events
+            if (!this.connections.has(channelId)) {
+                console.log(`⚠️ Ignoring incoming call for deleted channel: ${channelId}`);
+                return;
+            }
+            for (const callEvent of callEvents) {
+                console.log(`📞 Incoming call for ${channelId}:`, JSON.stringify(callEvent, null, 2));
+                // Save call event to database
+                yield WhatsAppEvents_1.default.create({ channelId, payload: callEvent });
+                // Format call event to webhook payload format
+                const payload = yield this.formatCallToWebhookPayload(channelId, callEvent);
+                console.log("Call payload formatted:", JSON.stringify(payload, null, 2));
+                if (payload) {
+                    // Emit call event
+                    this.emit('call', channelId, payload);
+                    // Send to webhooks
+                    this.sendToWebhooks(channelId, 'call.received', payload);
+                }
             }
         });
     }
@@ -750,6 +950,8 @@ class WhatsAppService extends events_1.EventEmitter {
                 this.lastPreloadAttempt.delete(channelId);
                 // Clear auth state if it exists
                 yield this.clearAuthState(channelId);
+                // Clear phone validation cache for this channel
+                this.clearPhoneValidationCache(channelId);
                 console.log(`✅ Channel ${channelId} removed from WhatsApp service memory`);
             }
             catch (error) {
@@ -851,6 +1053,8 @@ class WhatsAppService extends events_1.EventEmitter {
             yield Promise.all(disconnectPromises);
             // Clear all cached group metadata
             this.clearGroupCache();
+            // Clear phone validation cache
+            this.clearPhoneValidationCache();
             // Clear all tracking maps
             this.preloadAttempts.clear();
             this.lastPreloadAttempt.clear();
@@ -903,8 +1107,87 @@ class WhatsAppService extends events_1.EventEmitter {
         }
     }
     /**
+     * Clears phone validation cache for a specific channel or all channels
+     */
+    clearPhoneValidationCache(channelId) {
+        if (channelId) {
+            // Clear cache entries for specific channel
+            const keys = this.phoneValidationCache.keys();
+            const channelKeys = keys.filter(key => key.startsWith(`${channelId}:`));
+            this.phoneValidationCache.del(channelKeys);
+            console.log(`🧹 Cleared phone validation cache for channel: ${channelId} (${channelKeys.length} entries)`);
+        }
+        else {
+            // Clear all cached phone validations
+            const totalKeys = this.phoneValidationCache.keys().length;
+            this.phoneValidationCache.flushAll();
+            console.log(`🧹 Cleared all phone validation cache (${totalKeys} entries)`);
+        }
+    }
+    /**
+     * Invalidates cache for a specific phone number
+     */
+    invalidatePhoneValidation(channelId, phoneNumber) {
+        const cacheKey = `${channelId}:${phoneNumber}`;
+        const wasDeleted = this.phoneValidationCache.del(cacheKey);
+        if (wasDeleted) {
+            console.log(`🗑️ Invalidated phone validation cache for: ${phoneNumber}`);
+        }
+        else {
+            console.log(`ℹ️ No cache entry found for phone number: ${phoneNumber}`);
+        }
+    }
+    /**
+     * Gets phone validation cache statistics
+     */
+    getPhoneValidationCacheStats() {
+        const stats = this.phoneValidationCache.getStats();
+        return {
+            totalKeys: this.phoneValidationCache.keys().length,
+            hits: stats.hits,
+            misses: stats.misses,
+            keys: this.phoneValidationCache.keys(),
+        };
+    }
+    /**
+     * Validates a phone number with caching to prevent repeated validations
+     */
+    validatePhoneNumberWithCache(channelId, phoneNumber) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const cacheKey = `${channelId}:${phoneNumber}`;
+            // Check if validation result is cached
+            const cachedResult = this.phoneValidationCache.get(cacheKey);
+            if (cachedResult !== undefined) {
+                console.log(`📋 Using cached validation for ${phoneNumber}: ${cachedResult ? 'valid' : 'invalid'}`);
+                if (!cachedResult) {
+                    throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+                }
+                return;
+            }
+            // Perform validation if not cached
+            console.log(`🔍 Validating phone number: ${phoneNumber} (not in cache)`);
+            try {
+                const validation = yield this.checkIdExists(channelId, phoneNumber);
+                // Cache the validation result
+                this.phoneValidationCache.set(cacheKey, validation.exists);
+                if (!validation.exists) {
+                    console.log(`❌ Phone number ${phoneNumber} is not registered on WhatsApp (cached for future use)`);
+                    throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+                }
+                console.log(`✅ Phone number ${phoneNumber} is valid on WhatsApp (cached for future use)`);
+            }
+            catch (error) {
+                if (error.message.includes('not registered on WhatsApp')) {
+                    throw error; // Re-throw our custom error
+                }
+                console.error(`❌ Error validating phone number ${phoneNumber}:`, error);
+                throw new Error(`Failed to validate phone number ${phoneNumber}. Please check the number format and try again.`);
+            }
+        });
+    }
+    /**
      * Sends a message using a format similar to the WhatsApp Cloud API.
-     * This handles both single and bulk messages.
+     * This handles both single and bulk messages, including replies with context.
      */
     sendMessageFromApi(channelId, payload) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -913,6 +1196,7 @@ class WhatsAppService extends events_1.EventEmitter {
                 throw new Error(`Channel ${channelId} is not connected`);
             }
             let to = payload.to;
+            const originalNumber = to; // Store original for validation
             // check if to has @s.whatsapp.net
             if (!to.includes('@s.whatsapp.net')) {
                 to = to + '@s.whatsapp.net';
@@ -920,7 +1204,32 @@ class WhatsAppService extends events_1.EventEmitter {
             if (!to) {
                 throw new Error('Recipient "to" is required');
             }
+            // Validate phone number exists on WhatsApp (with caching)
+            yield this.validatePhoneNumberWithCache(channelId, originalNumber);
             let messageContent;
+            // Handle context for replies
+            let quotedMessage = null;
+            if (payload.context && payload.context.message_id) {
+                console.log(`🔄 Looking up original message for reply: ${payload.context.message_id}`);
+                try {
+                    // Look up the original message from WhatsAppEvents collection
+                    const originalMessageDoc = yield WhatsAppEvents_1.default.findOne({
+                        channelId,
+                        'payload.key.id': payload.context.message_id,
+                    }).sort({ createdAt: -1 }); // Get the most recent match
+                    if (originalMessageDoc && originalMessageDoc.payload) {
+                        quotedMessage = originalMessageDoc.payload;
+                        console.log(`✅ Found original message for reply: ${payload.context.message_id}`);
+                    }
+                    else {
+                        console.warn(`⚠️ Original message not found for reply: ${payload.context.message_id}`);
+                    }
+                }
+                catch (error) {
+                    console.error(`❌ Error looking up original message for reply:`, error);
+                    // Continue without quote if lookup fails
+                }
+            }
             switch (payload.type) {
                 case 'text':
                     messageContent = { text: payload.text.body };
@@ -943,8 +1252,18 @@ class WhatsAppService extends events_1.EventEmitter {
                 default:
                     throw new Error(`Unsupported message type: "${payload.type}"`);
             }
+            console.log("Quoted message:", quotedMessage);
             try {
-                const message = yield sock.sendMessage(to, messageContent);
+                let message;
+                // Send message with quoted reply if context is provided
+                if (quotedMessage) {
+                    console.log(`📝 Sending reply to message: ${payload.context.message_id}`);
+                    message = yield sock.sendMessage(to, messageContent, { quoted: quotedMessage });
+                }
+                else {
+                    message = yield sock.sendMessage(to, messageContent);
+                }
+                console.log(`📤 Message sent from ${channelId} to ${to}${quotedMessage ? ' (reply)' : ''}`);
                 return message;
             }
             catch (error) {

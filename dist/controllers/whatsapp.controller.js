@@ -438,6 +438,29 @@ class WhatsAppController {
             try {
                 const { channelId } = req.params;
                 const payload = req.body;
+                // Validate required fields
+                if (!payload.to) {
+                    return res.status(400).json({
+                        error: {
+                            message: 'Parameter "to" is required',
+                            type: 'OAuthException',
+                            code: 131021,
+                            error_subcode: 2490003,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
+                if (!payload.type) {
+                    return res.status(400).json({
+                        error: {
+                            message: 'Parameter "type" is required',
+                            type: 'OAuthException',
+                            code: 131021,
+                            error_subcode: 2490003,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
                 const result = yield WhatsAppService_1.whatsAppService.sendMessageFromApi(channelId, payload);
                 // Format response to match WhatsApp Cloud API
                 const wa_id = result.key.remoteJid.split('@')[0];
@@ -459,6 +482,52 @@ class WhatsAppController {
             }
             catch (error) {
                 console.error('Error sending message via API:', error);
+                // Handle specific validation errors with WhatsApp Cloud API format
+                if (error.message.includes('not registered on WhatsApp')) {
+                    return res.status(400).json({
+                        error: {
+                            message: error.message,
+                            type: 'OAuthException',
+                            code: 131026,
+                            error_subcode: 2490011,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
+                if (error.message.includes('Failed to validate phone number')) {
+                    return res.status(400).json({
+                        error: {
+                            message: error.message,
+                            type: 'OAuthException',
+                            code: 131021,
+                            error_subcode: 2490003,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
+                if (error.message.includes('is not connected')) {
+                    return res.status(400).json({
+                        error: {
+                            message: error.message,
+                            type: 'OAuthException',
+                            code: 131005,
+                            error_subcode: 2490004,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
+                if (error.message.includes('Unsupported message type')) {
+                    return res.status(400).json({
+                        error: {
+                            message: error.message,
+                            type: 'OAuthException',
+                            code: 131009,
+                            error_subcode: 2490005,
+                            fbtrace_id: this.generateTraceId(),
+                        },
+                    });
+                }
+                // Default error handling for other errors
                 (0, utils_1.handleError)(res, error);
             }
         });
@@ -556,6 +625,8 @@ class WhatsAppController {
                     'message.sent',
                     'message.delivered',
                     'message.read',
+                    'message.status',
+                    'call.received',
                 ];
                 const invalidEvents = events.filter((event) => !validEvents.includes(event));
                 if (invalidEvents.length > 0) {
@@ -658,6 +729,8 @@ class WhatsAppController {
                         'message.sent',
                         'message.delivered',
                         'message.read',
+                        'message.status',
+                        'call.received',
                     ];
                     const invalidEvents = events.filter((event) => !validEvents.includes(event));
                     if (invalidEvents.length > 0) {
@@ -722,6 +795,12 @@ class WhatsAppController {
                 utils.handleError(res, error);
             }
         });
+    }
+    /**
+     * Generates a unique trace ID for error tracking
+     */
+    generateTraceId() {
+        return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 }
 const whatsAppController = new WhatsAppController();

@@ -42,6 +42,8 @@ const schema = new mongoose_1.Schema({
     versionKey: false,
     timestamps: true,
 });
+// Compound index for efficient message lookup by channel and message ID (used for replies)
+schema.index({ channelId: 1, 'payload.key.id': 1 });
 schema.plugin(mongoose_paginate_v2_1.default);
 exports.default = mongoose_1.default.model('WhatsAppEvents', schema);
 //# sourceMappingURL=WhatsAppEvents.js.map
