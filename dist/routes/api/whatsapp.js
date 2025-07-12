@@ -19,6 +19,7 @@ router.delete('/channels/:channelId', whatsapp_controller_1.default.deleteChanne
 // Interaction Routes
 //
 router.get('/channels/:channelId/qr', whatsapp_controller_1.default.getQRCode);
+router.post('/channels/:channelId/qr/refresh', whatsapp_controller_1.default.refreshQR);
 router.post('/channels/:channelId/pairing-code', whatsapp_controller_1.default.requestPairingCode);
 //
 // Messaging Routes

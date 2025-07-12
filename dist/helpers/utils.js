@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.formatJid = exports.itemAlreadyExists = exports.itemNotFound = exports.isIDGood = exports.buildSuccObject = exports.validationResultMiddleware = exports.buildErrObject = exports.handleError = exports.getCountry = exports.getBrowserInfo = exports.getIP = exports.removeExtensionFromFile = exports.Random = exports.selectRandomId = exports.convertToDate = void 0;
+exports.removeSuffixFromJid = exports.formatJid = exports.itemAlreadyExists = exports.itemNotFound = exports.isIDGood = exports.buildSuccObject = exports.validationResultMiddleware = exports.buildErrObject = exports.handleError = exports.getCountry = exports.getBrowserInfo = exports.getIP = exports.removeExtensionFromFile = exports.Random = exports.selectRandomId = exports.convertToDate = void 0;
 const mongoose_1 = __importDefault(require("mongoose"));
 const request_ip_1 = __importDefault(require("request-ip"));
 const express_validator_1 = require("express-validator");
@@ -103,4 +103,12 @@ const formatJid = (jid) => {
     return jid + suffix;
 };
 exports.formatJid = formatJid;
+const removeSuffixFromJid = (jid) => {
+    const suffix = '@s.whatsapp.net';
+    if (jid.includes(suffix)) {
+        return jid.replace(suffix, '');
+    }
+    return jid;
+};
+exports.removeSuffixFromJid = removeSuffixFromJid;
 //# sourceMappingURL=utils.js.map

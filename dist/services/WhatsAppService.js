@@ -47,6 +47,7 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const uuid_1 = require("uuid");
 const axios_1 = __importDefault(require("axios"));
+const utils_1 = require("@/helpers/utils");
 class WhatsAppService extends events_1.EventEmitter {
     constructor() {
         super();
@@ -323,6 +324,8 @@ class WhatsAppService extends events_1.EventEmitter {
                 // Generate QR code
                 const qrDataURL = yield qrcode_1.default.toDataURL(qr);
                 yield this.updateChannelStatus(channelId, 'qr_ready');
+                // Store QR code in channel config
+                yield this.updateChannelConfig(channelId, { qrCode: qrDataURL });
                 this.emit('qr', channelId, qrDataURL);
             }
             if (connection === 'connecting' && phoneNumber) {
@@ -484,12 +487,12 @@ class WhatsAppService extends events_1.EventEmitter {
                                             profile: {
                                                 name: contactName,
                                             },
-                                            wa_id: from,
+                                            wa_id: (0, utils_1.removeSuffixFromJid)(from),
                                         },
                                     ],
                                     messages: [
                                         {
-                                            from,
+                                            from: (0, utils_1.removeSuffixFromJid)(from),
                                             id: messageId,
                                             timestamp,
                                         },
@@ -796,6 +799,45 @@ class WhatsAppService extends events_1.EventEmitter {
             }
             catch (error) {
                 console.error(`❌ Error updating channel config for ${channelId}:`, error);
+            }
+        });
+    }
+    /**
+     * Refreshes QR code for an existing channel by clearing auth state and reconnecting
+     */
+    refreshQRCode(channelId) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                console.log(`🔄 Refreshing QR code for channel: ${channelId}`);
+                // Step 1: Disconnect current connection if exists
+                const currentConnection = this.connections.get(channelId);
+                if (currentConnection) {
+                    console.log(`🔌 Disconnecting current connection for ${channelId}`);
+                    try {
+                        yield currentConnection.logout();
+                    }
+                    catch (error) {
+                        console.warn(`⚠️ Error during logout for ${channelId}:`, error);
+                    }
+                    this.connections.delete(channelId);
+                }
+                // Step 2: Clear auth state to force fresh QR generation
+                console.log(`🧹 Clearing auth state for ${channelId} to generate fresh QR`);
+                yield this.clearAuthState(channelId);
+                // Step 3: Update channel status
+                yield this.updateChannelStatus(channelId, 'generating_qr');
+                this.connectionStatus.set(channelId, 'generating_qr');
+                // Step 4: Clear any cached config QR code
+                yield this.updateChannelConfig(channelId, { qrCode: null });
+                // Step 5: Reconnect to generate new QR code
+                console.log(`🔄 Starting fresh connection for ${channelId}`);
+                yield this.connectChannel(channelId);
+                console.log(`✅ QR refresh initiated for channel: ${channelId}`);
+            }
+            catch (error) {
+                console.error(`❌ Error refreshing QR code for ${channelId}:`, error);
+                yield this.updateChannelStatus(channelId, 'error');
+                throw error;
             }
         });
     }
