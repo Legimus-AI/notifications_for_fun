@@ -47,7 +47,7 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const uuid_1 = require("uuid");
 const axios_1 = __importDefault(require("axios"));
-const utils_1 = require("@/helpers/utils");
+const utils_1 = require("../helpers/utils");
 class WhatsAppService extends events_1.EventEmitter {
     constructor() {
         super();
