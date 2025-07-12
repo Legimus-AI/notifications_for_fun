@@ -149,9 +149,9 @@ const startServer = async () => {
 
     // Restore active WhatsApp channels
     console.log('🔄 Restoring active WhatsApp channels...');
-    // if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production') {
       await whatsAppService.restoreActiveChannels();
-    // }
+    }
     console.log('✅ WhatsApp channels restoration completed');
 
     // Start file cleanup service
