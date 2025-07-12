@@ -25,7 +25,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
-import { removeSuffixFromJid } from '@/helpers/utils';
+import { removeSuffixFromJid } from '../helpers/utils';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
