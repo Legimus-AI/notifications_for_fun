@@ -75,6 +75,7 @@
     "passport-jwt": "^4.0.1",
     "qrcode": "^1.5.4",
     "request-ip": "^3.3.0",
+    "sharp": "^0.32.6",
     "socket.io": "^4.8.1",
     "trim-request": "^1.0.6",
     "uuid": "^9.0.1",

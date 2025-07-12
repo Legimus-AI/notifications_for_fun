@@ -1,16 +1,6 @@
-import makeWASocket, {
-  WASocket,
-  ConnectionState,
-  DisconnectReason,
-  AuthenticationState,
-  AuthenticationCreds,
-  initAuthCreds,
-  Browsers,
-  downloadMediaMessage,
-  proto,
-  WAMessage,
-  GroupMetadata,
-} from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, Browsers } from '@whiskeysockets/baileys';
+import pino from 'pino';
+const P = pino;
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
 import NodeCache from 'node-cache';
@@ -26,6 +16,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid } from '../helpers/utils';
+import { WAMessage, GroupMetadata } from '@whiskeysockets/baileys';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -47,6 +38,7 @@ export class WhatsAppService extends EventEmitter {
   private phoneValidationCache: NodeCache;
   private preloadAttempts: Map<string, number> = new Map(); // Track preload attempts per channel
   private lastPreloadAttempt: Map<string, number> = new Map(); // Track last preload timestamp
+  private contacts: Map<string, string[]> = new Map(); // Store contact JIDs per channel
 
   constructor() {
     super();
@@ -251,38 +243,21 @@ export class WhatsAppService extends EventEmitter {
    */
   async connectChannel(channelId: string, phoneNumber?: string): Promise<void> {
     try {
-      console.log(`🔄 Connecting WhatsApp channel: ${channelId}`);
-
-      // Update channel status
-      await this.updateChannelStatus(channelId, 'connecting');
-
-      // Store phoneNumber in config if provided
-      if (phoneNumber) {
-        await this.updateChannelConfig(channelId, { phoneNumber });
-        console.log(`📱 Stored phoneNumber for ${channelId}: ${phoneNumber}`);
+      // Check if connection already exists
+      if (this.connections.has(channelId)) {
+        console.log(`🔌 Channel ${channelId} already connected, skipping...`);
+        return;
       }
 
-      // For new connections, clear existing auth state to avoid Binary conversion issues
-      const existingAuth = await WhatsAppAuthState.findOne({ channelId });
-      if (!existingAuth) {
-        console.log(
-          `🆕 Creating fresh auth state for new channel: ${channelId}`,
-        );
-      }
+      const { state, saveCreds } = await useMultiFileAuthState(channelId);
 
-      // Create auth state
-      const auth = await this.createMongoAuthState(channelId);
-
-      // Create socket with Chrome Windows simulation for anti-ban
-      // This simulates a real Chrome browser on Windows to reduce ban risk
       const sock = makeWASocket({
-        auth,
-        browser: Browsers.windows('WhatsApp Web'),
+        auth: state,
+        logger: P({ level: 'debug' }),
         printQRInTerminal: false,
-        markOnlineOnConnect: false, // Critical: prevents auto online status
-        syncFullHistory: false, // Reduces bandwidth and suspicion
-        defaultQueryTimeoutMs: 60000,
-        emitOwnEvents: false, // Don't emit events for own messages
+        generateHighQualityLinkPreview: true,
+        syncFullHistory: true, // Enable full history sync to get all contacts
+        browser: Browsers.macOS('Desktop'), // Emulate desktop for better history sync
         // Implement cached group metadata to prevent rate limits and bans
         cachedGroupMetadata: async (jid) => {
           const cached = this.groupCache.get(jid);
@@ -299,18 +274,19 @@ export class WhatsAppService extends EventEmitter {
         // },
       });
 
-      // Store connection
-      this.connections.set(channelId, sock);
-      this.connectionStatus.set(channelId, 'connecting');
+      // Listen for history set to capture contacts
+      sock.ev.on('messaging-history.set', ({ contacts }) => {
+        const contactJids = contacts.map(c => c.id);
+        this.contacts.set(channelId, contactJids);
+        console.log(`📇 Synced ${contactJids.length} contacts for channel ${channelId}`);
+      });
+
+      // Save credentials when updated
+      sock.ev.on('creds.update', saveCreds);
 
       // Handle connection updates
       sock.ev.on('connection.update', async (update) => {
         await this.handleConnectionUpdate(channelId, update, phoneNumber);
-      });
-
-      // Handle credential updates
-      sock.ev.on('creds.update', async () => {
-        await this.saveCreds(channelId, auth.creds);
       });
 
       // Handle incoming messages
@@ -361,6 +337,11 @@ export class WhatsAppService extends EventEmitter {
       sock.ev.on('call', async (callEvents) => {
         await this.handleIncomingCalls(channelId, callEvents);
       });
+
+      // Store connection
+      this.connections.set(channelId, sock);
+      this.connectionStatus.set(channelId, 'connecting');
+
     } catch (error) {
       console.error(`❌ Error connecting channel ${channelId}:`, error);
       await this.updateChannelStatus(channelId, 'error');
@@ -1038,6 +1019,109 @@ export class WhatsAppService extends EventEmitter {
       return message;
     } catch (error) {
       console.error(`❌ Error sending media message from ${channelId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sends a WhatsApp story/status update (24 hours)
+   */
+  async sendStory(
+    channelId: string,
+    type: 'text' | 'image' | 'video',
+    content: any,
+  ): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    try {
+      let messageContent: any = {};
+      const messageOptions: any = {
+        broadcast: true // Enable broadcast mode for status updates
+      };
+
+      // If a specific list of contacts is provided, add it to the options.
+      // Otherwise, use all synced contacts to send to everyone
+      let statusJidList = content.statusJidList;
+      if (
+        !statusJidList ||
+        !Array.isArray(statusJidList) ||
+        statusJidList.length === 0
+      ) {
+        statusJidList = this.contacts.get(channelId) || [];
+        if (statusJidList.length === 0) {
+          console.warn(`⚠️ No contacts synced for channel ${channelId}. Story may not be visible.`);
+        }
+      }
+      messageOptions.statusJidList = statusJidList;
+
+      switch (type) {
+        case 'text':
+          if (typeof content === 'string') {
+            messageContent = { text: content };
+          } else if (content.text) {
+            messageContent = { text: content.text };
+            // Text-specific story options must be in the third parameter (options)
+            if (content.font) messageOptions.font = content.font;
+            if (content.backgroundColor)
+              messageOptions.backgroundColor = content.backgroundColor;
+          } else {
+            throw new Error('Text content is required for text stories');
+          }
+          break;
+
+        case 'image':
+          if (content.url || content.buffer) {
+            messageContent = {
+              image: content.url ? { url: content.url } : content.buffer,
+              caption: content.caption || '',
+            };
+            // For non-text stories, add optional background if provided
+            if (content.backgroundColor) {
+              messageOptions.backgroundColor = content.backgroundColor;
+            }
+          } else {
+            throw new Error('Image URL or buffer is required for image stories');
+          }
+          break;
+
+        case 'video':
+          if (content.url || content.buffer) {
+            messageContent = {
+              video: content.url ? { url: content.url } : content.buffer,
+              caption: content.caption || '',
+            };
+            // For non-text stories, add optional background if provided
+            if (content.backgroundColor) {
+              messageOptions.backgroundColor = content.backgroundColor;
+            }
+          } else {
+            throw new Error('Video URL or buffer is required for video stories');
+          }
+          break;
+      }
+
+      console.log(`📖 Sending story from channel: ${channelId}`);
+      console.log(`📖 Target JID: status@broadcast`);
+      console.log(`📖 Message content:`, JSON.stringify(messageContent));
+      console.log(`📖 Message options:`, JSON.stringify(messageOptions));
+
+      // To send a story, the JID must be 'status@broadcast'
+      const result = await sock.sendMessage(
+        'status@broadcast',
+        messageContent,
+        messageOptions,
+      );
+
+      console.log(`✅ Story sent successfully from ${channelId}`);
+      return result;
+    } catch (error) {
+      console.error(
+        `❌ Error sending story from channel ${channelId}:`,
+        error,
+      );
       throw error;
     }
   }

@@ -41,6 +41,7 @@ router.post(
   '/channels/:channelId/messages',
   whatsAppController.sendMessageFromApi,
 );
+router.post('/channels/:channelId/story', whatsAppController.sendStory);
 
 //
 // Contact Utility Routes

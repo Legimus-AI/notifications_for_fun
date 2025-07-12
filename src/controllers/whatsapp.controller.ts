@@ -978,6 +978,75 @@ class WhatsAppController {
       utils.handleError(res, error);
     }
   };
+
+  /**
+   * Sends a WhatsApp story/status update (24 hours)
+   */
+  public sendStory = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const { type, content } = req.body;
+
+      // Validate required fields
+      if (!type) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'STORY_TYPE_REQUIRED'),
+        );
+      }
+
+      if (!content) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'STORY_CONTENT_REQUIRED'),
+        );
+      }
+
+      // Find channel
+      const channel = await Channel.findOne({ channelId });
+      if (!channel) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'),
+        );
+      }
+
+      // Check if channel is active
+      const status = whatsAppService.getChannelStatus(channelId);
+      if (status !== 'active') {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'CHANNEL_NOT_ACTIVE'),
+        );
+      }
+
+      // Validate story type
+      const validTypes = ['text', 'image', 'video'];
+      if (!validTypes.includes(type)) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'INVALID_STORY_TYPE'),
+        );
+      }
+
+      // Send story
+      const result = await whatsAppService.sendStory(channelId, type, content);
+
+      res.status(200).json({
+        ok: true,
+        message: 'Story sent successfully',
+        payload: {
+          messageId: result.key.id,
+          type,
+          status: 'sent',
+          expiresIn: '24 hours',
+        },
+      });
+    } catch (error) {
+      console.error('Error sending story:', error);
+      utils.handleError(res, error);
+    }
+  };
 }
 
 const whatsAppController = new WhatsAppController();
