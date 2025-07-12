@@ -686,7 +686,7 @@ export class WhatsAppService extends EventEmitter {
     // Handle context for replies
     if (contextInfo && contextInfo.stanzaId) {
       messageContainer.context = {
-        from: contextInfo.participant,
+        from: removeSuffixFromJid(contextInfo.participant),
         id: contextInfo.stanzaId,
         quotedMessage: contextInfo.quotedMessage,
       };
@@ -1098,7 +1098,7 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Sends a message using a format similar to the WhatsApp Cloud API.
-   * This handles both single and bulk messages.
+   * This handles both single and bulk messages, including replies with context.
    */
   async sendMessageFromApi(channelId: string, payload: any): Promise<any> {
     const sock = this.connections.get(channelId);
@@ -1116,6 +1116,30 @@ export class WhatsAppService extends EventEmitter {
     }
 
     let messageContent: any;
+
+    // Handle context for replies
+    let quotedMessage: any = null;
+    if (payload.context && payload.context.message_id) {
+      console.log(`🔄 Looking up original message for reply: ${payload.context.message_id}`);
+
+      try {
+        // Look up the original message from WhatsAppEvents collection
+        const originalMessageDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': payload.context.message_id,
+        }).sort({ createdAt: -1 }); // Get the most recent match
+
+        if (originalMessageDoc && originalMessageDoc.payload) {
+          quotedMessage = originalMessageDoc.payload;
+          console.log(`✅ Found original message for reply: ${payload.context.message_id}`);
+        } else {
+          console.warn(`⚠️ Original message not found for reply: ${payload.context.message_id}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error looking up original message for reply:`, error);
+        // Continue without quote if lookup fails
+      }
+    }
 
     switch (payload.type) {
       case 'text':
@@ -1142,8 +1166,20 @@ export class WhatsAppService extends EventEmitter {
         throw new Error(`Unsupported message type: "${payload.type}"`);
     }
 
+    console.log("Quoted message:", quotedMessage);
+
     try {
-      const message = await sock.sendMessage(to, messageContent);
+      let message;
+
+      // Send message with quoted reply if context is provided
+      if (quotedMessage) {
+        console.log(`📝 Sending reply to message: ${payload.context.message_id}`);
+        message = await sock.sendMessage(to, messageContent, { quoted: quotedMessage });
+      } else {
+        message = await sock.sendMessage(to, messageContent);
+      }
+
+      console.log(`📤 Message sent from ${channelId} to ${to}${quotedMessage ? ' (reply)' : ''}`);
       return message;
     } catch (error) {
       console.error(`❌ Error sending message from ${channelId}:`, error);
