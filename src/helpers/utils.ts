@@ -124,6 +124,14 @@ const formatJid = (jid: string): string => {
   return jid + suffix;
 };
 
+const removeSuffixFromJid = (jid: string): string => {
+  const suffix = '@s.whatsapp.net';
+  if (jid.includes(suffix)) {
+    return jid.replace(suffix, '');
+  }
+  return jid;
+};
+
 export {
   convertToDate,
   selectRandomId,
@@ -140,4 +148,5 @@ export {
   itemNotFound,
   itemAlreadyExists,
   formatJid,
+  removeSuffixFromJid,
 };

@@ -25,6 +25,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
+import { removeSuffixFromJid } from '@/helpers/utils';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -598,12 +599,12 @@ export class WhatsAppService extends EventEmitter {
                     profile: {
                       name: contactName,
                     },
-                    wa_id: from,
+                    wa_id: removeSuffixFromJid(from),
                   },
                 ],
                 messages: [
                   {
-                    from,
+                    from: removeSuffixFromJid(from),
                     id: messageId,
                     timestamp,
                   },
