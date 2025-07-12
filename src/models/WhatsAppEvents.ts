@@ -26,6 +26,9 @@ const schema = new Schema(
   },
 );
 
+// Compound index for efficient message lookup by channel and message ID (used for replies)
+schema.index({ channelId: 1, 'payload.key.id': 1 });
+
 schema.plugin(mongoosePaginate);
 
 export default mongoose.model<IWhatsAppEvent>('WhatsAppEvents', schema);

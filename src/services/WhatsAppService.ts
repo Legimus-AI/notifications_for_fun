@@ -673,6 +673,13 @@ export class WhatsAppService extends EventEmitter {
         messageContent.stickerMessage,
       );
       contextInfo = messageContent.stickerMessage.contextInfo;
+    } else if (messageContent?.reactionMessage) {
+      messageContainer.type = 'reaction';
+      messageContainer.reaction = {
+        message_id: messageContent.reactionMessage.key.id,
+        emoji: messageContent.reactionMessage.text,
+      };
+      console.log(`👍 Reaction message detected: ${messageContent.reactionMessage.text} on message ${messageContent.reactionMessage.key.id}`);
     } else {
       messageContainer.type = 'unsupported';
       messageContainer.errors = [
