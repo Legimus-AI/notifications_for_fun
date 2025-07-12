@@ -820,6 +820,77 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Formats a Baileys message status update into a WhatsApp Cloud API-like webhook payload.
+   */
+  private async formatStatusToWebhookPayload(
+    channelId: string,
+    statusUpdate: any,
+  ): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      return null;
+    }
+
+    const messageId = statusUpdate.key.id;
+    const to = statusUpdate.key.remoteJid;
+    const status = statusUpdate.status; // 'sent', 'delivered', 'read'
+    const timestamp = statusUpdate.timestamp || Math.floor(Date.now() / 1000);
+
+    // Handle different status types
+    let webhookStatus = status;
+    if (status === 'sent') {
+      webhookStatus = 'sent';
+    } else if (status === 'delivered') {
+      webhookStatus = 'delivered';
+    } else if (status === 'read') {
+      webhookStatus = 'read';
+    }
+
+    const payload: any = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: channelId,
+          changes: [
+            {
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: {
+                  display_phone_number: sock.user?.id.split(':')[0],
+                  phone_number_id: sock.user?.id,
+                },
+                statuses: [
+                  {
+                    id: messageId,
+                    status: webhookStatus,
+                    timestamp: timestamp,
+                    recipient_id: removeSuffixFromJid(to),
+                  },
+                ],
+              },
+              field: 'messages',
+            },
+          ],
+        },
+      ],
+    };
+
+    // Add additional fields for read status
+    if (status === 'read') {
+      payload.entry[0].changes[0].value.statuses[0].conversation = {
+        id: to,
+        origin: {
+          type: 'user_initiated',
+        },
+      };
+    }
+
+    console.log(`📊 Formatted status update for ${channelId}: ${status} for message ${messageId}`);
+
+    return payload;
+  }
+
+  /**
    * Handles message status updates (sent, delivered, read)
    */
   private async handleMessageStatusUpdates(channelId: string, updates: any[]) {
@@ -832,10 +903,29 @@ export class WhatsAppService extends EventEmitter {
     }
 
     for (const update of updates) {
-      console.log(`📊 Message status update for ${channelId}:`, update);
+      console.log(`📊 Message status update for ${channelId}:`, JSON.stringify(update, null, 2));
 
-      // Emit status update event
-      this.emit('message-status', channelId, update);
+      // Format status update to webhook payload format
+      const payload = await this.formatStatusToWebhookPayload(channelId, update);
+      console.log("Status payload formatted:", JSON.stringify(payload, null, 2));
+
+      if (payload) {
+        // Emit status update event
+        this.emit('message-status', channelId, payload);
+
+        // Determine webhook event type based on status
+        let webhookEventType = 'message.status';
+        if (update.status === 'sent') {
+          webhookEventType = 'message.sent';
+        } else if (update.status === 'delivered') {
+          webhookEventType = 'message.delivered';
+        } else if (update.status === 'read') {
+          webhookEventType = 'message.read';
+        }
+
+        // Send to webhooks
+        this.sendToWebhooks(channelId, webhookEventType, payload);
+      }
 
       // TODO: Update NotificationLogs collection
       // await this.updateMessageStatus(channelId, update);

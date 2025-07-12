@@ -648,6 +648,7 @@ class WhatsAppController {
         'message.sent',
         'message.delivered',
         'message.read',
+        'message.status',
         'call.received',
       ];
       const invalidEvents = events.filter(
@@ -794,6 +795,7 @@ class WhatsAppController {
           'message.sent',
           'message.delivered',
           'message.read',
+          'message.status',
           'call.received',
         ];
         const invalidEvents = events.filter(
