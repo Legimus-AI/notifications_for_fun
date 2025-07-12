@@ -11,6 +11,7 @@
     "dev": "cross-env NODE_ENV=development ts-node-dev --respawn --pretty --transpile-only -r tsconfig-paths/register ./src/index.ts",
     "tsc": "npx tsc",
     "postinstall": "npm run tsc",
+    "build": "npm run tsc",
     "fresh": "npm run clean && npm run seed",
     "clean": "node clean.js",
     "prettier": "prettier --write --config .prettierrc.json \"**/*.js\"",
