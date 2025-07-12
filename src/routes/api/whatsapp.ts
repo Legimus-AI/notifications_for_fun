@@ -22,6 +22,7 @@ router.delete('/channels/:channelId', whatsAppController.deleteChannel);
 //
 
 router.get('/channels/:channelId/qr', whatsAppController.getQRCode);
+router.post('/channels/:channelId/qr/refresh', whatsAppController.refreshQR);
 router.post(
   '/channels/:channelId/pairing-code',
   whatsAppController.requestPairingCode,
