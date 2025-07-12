@@ -842,17 +842,33 @@ export class WhatsAppService extends EventEmitter {
 
     const messageId = statusUpdate.key.id;
     const to = statusUpdate.key.remoteJid;
-    const status = statusUpdate.status; // 'sent', 'delivered', 'read'
+    const numericStatus = statusUpdate.update?.status; // Baileys sends numeric status codes
     const timestamp = statusUpdate.timestamp || Math.floor(Date.now() / 1000);
 
-    // Handle different status types
-    let webhookStatus = status;
-    if (status === 'sent') {
-      webhookStatus = 'sent';
-    } else if (status === 'delivered') {
-      webhookStatus = 'delivered';
-    } else if (status === 'read') {
-      webhookStatus = 'read';
+    // Map Baileys numeric status codes to WhatsApp Cloud API status strings
+    // Based on actual behavior observed in logs:
+    // 0: pending/sent, 1: sent (server received), 2: sent, 3: delivered, 4: read
+    let webhookStatus: string;
+    switch (numericStatus) {
+      case 0:
+        webhookStatus = 'sent';
+        break;
+      case 1:
+        webhookStatus = 'sent'; // Server received, treat as sent
+        break;
+      case 2:
+        webhookStatus = 'sent'; // Message sent
+        break;
+      case 3:
+        webhookStatus = 'delivered'; // Message delivered to recipient
+        break;
+      case 4:
+        webhookStatus = 'read'; // Message read by recipient
+        break;
+      default:
+        console.warn(`⚠️ Unknown status code ${numericStatus} for message ${messageId}`);
+        webhookStatus = 'unknown';
+        break;
     }
 
     const payload: any = {
@@ -885,16 +901,16 @@ export class WhatsAppService extends EventEmitter {
     };
 
     // Add additional fields for read status
-    if (status === 'read') {
+    if (webhookStatus === 'read') {
       payload.entry[0].changes[0].value.statuses[0].conversation = {
-        id: to,
+        id: removeSuffixFromJid(to),
         origin: {
           type: 'user_initiated',
         },
       };
     }
 
-    console.log(`📊 Formatted status update for ${channelId}: ${status} for message ${messageId}`);
+    console.log(`📊 Formatted status update for ${channelId}: ${webhookStatus} (code: ${numericStatus}) for message ${messageId}`);
 
     return payload;
   }
@@ -922,13 +938,15 @@ export class WhatsAppService extends EventEmitter {
         // Emit status update event
         this.emit('message-status', channelId, payload);
 
-        // Determine webhook event type based on status
+        // Determine webhook event type based on status from the formatted payload
+        const webhookStatus = payload.entry[0]?.changes[0]?.value?.statuses[0]?.status;
         let webhookEventType = 'message.status';
-        if (update.status === 'sent') {
+
+        if (webhookStatus === 'sent') {
           webhookEventType = 'message.sent';
-        } else if (update.status === 'delivered') {
+        } else if (webhookStatus === 'delivered') {
           webhookEventType = 'message.delivered';
-        } else if (update.status === 'read') {
+        } else if (webhookStatus === 'read') {
           webhookEventType = 'message.read';
         }
 
