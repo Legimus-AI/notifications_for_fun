@@ -1236,8 +1236,7 @@ class WhatsAppService extends events_1.EventEmitter {
                     break;
                 case 'image':
                 case 'video':
-                case 'audio':
-                case 'document': {
+                case 'audio': {
                     const mediaUrl = payload[payload.type].link;
                     const caption = payload[payload.type].caption;
                     if (!mediaUrl) {
@@ -1246,6 +1245,18 @@ class WhatsAppService extends events_1.EventEmitter {
                     messageContent = {
                         [payload.type]: { url: mediaUrl },
                         caption: caption,
+                    };
+                    break;
+                }
+                case 'document': {
+                    const documentPayload = payload.document;
+                    if (!documentPayload || !documentPayload.link) {
+                        throw new Error(`"link" is required for document type`);
+                    }
+                    messageContent = {
+                        document: { url: documentPayload.link },
+                        caption: documentPayload.caption,
+                        fileName: documentPayload.filename,
                     };
                     break;
                 }
