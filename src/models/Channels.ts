@@ -98,6 +98,7 @@ const ChannelSchema = new Schema(
         'connecting',
         'active',
         'inactive',
+        'disconnected',
         'error',
         'qr_ready',
         'pairing_code_ready',
