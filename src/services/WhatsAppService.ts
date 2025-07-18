@@ -76,10 +76,12 @@ export class WhatsAppService extends EventEmitter {
       console.log('🔄 Restoring active WhatsApp channels...');
 
       // Find all channels that were active before server restart
+      // Exclude 'disconnected' channels to prevent restoration
       const activeChannels = await Channel.find({
         type: 'whatsapp_automated',
         status: {
           $in: ['active', 'connecting', 'qr_ready', 'pairing_code_ready'],
+          $nin: ['disconnected'],
         },
         isActive: true,
       });
@@ -376,10 +378,19 @@ export class WhatsAppService extends EventEmitter {
     update: Partial<ConnectionState>,
     phoneNumber?: string,
   ) {
-    // Check if channel still exists before processing events
-    if (!this.connections.has(channelId)) {
+    // Check if channel still exists or is being disconnected before processing events
+    const currentStatus = this.connectionStatus.get(channelId);
+    if (!this.connections.has(channelId) && currentStatus !== 'disconnecting') {
       console.log(
         `⚠️ Ignoring connection update for deleted channel: ${channelId}`,
+      );
+      return;
+    }
+    
+    // Skip processing if channel is being disconnected or already disconnected
+    if (currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
+      console.log(
+        `⚠️ Ignoring connection update for ${currentStatus} channel: ${channelId}`,
       );
       return;
     }
@@ -485,10 +496,11 @@ export class WhatsAppService extends EventEmitter {
    * Handles incoming messages
    */
   private async handleIncomingMessages(channelId: string, messageUpdate: any) {
-    // Check if channel still exists before processing events
-    if (!this.connections.has(channelId)) {
+    // Check if channel still exists or is being disconnected before processing events
+    const currentStatus = this.connectionStatus.get(channelId);
+    if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
       console.log(
-        `⚠️ Ignoring incoming message for deleted channel: ${channelId}`,
+        `⚠️ Ignoring incoming message for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`,
       );
       return;
     }
@@ -919,10 +931,11 @@ export class WhatsAppService extends EventEmitter {
    * Handles message status updates (sent, delivered, read)
    */
   private async handleMessageStatusUpdates(channelId: string, updates: any[]) {
-    // Check if channel still exists before processing events
-    if (!this.connections.has(channelId)) {
+    // Check if channel still exists or is being disconnected before processing events
+    const currentStatus = this.connectionStatus.get(channelId);
+    if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
       console.log(
-        `⚠️ Ignoring message status update for deleted channel: ${channelId}`,
+        `⚠️ Ignoring message status update for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`,
       );
       return;
     }
@@ -963,10 +976,11 @@ export class WhatsAppService extends EventEmitter {
    * Handles incoming calls
    */
   private async handleIncomingCalls(channelId: string, callEvents: any[]) {
-    // Check if channel still exists before processing events
-    if (!this.connections.has(channelId)) {
+    // Check if channel still exists or is being disconnected before processing events
+    const currentStatus = this.connectionStatus.get(channelId);
+    if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
       console.log(
-        `⚠️ Ignoring incoming call for deleted channel: ${channelId}`,
+        `⚠️ Ignoring incoming call for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`,
       );
       return;
     }
@@ -1046,12 +1060,45 @@ export class WhatsAppService extends EventEmitter {
    * Disconnects a channel
    */
   async disconnectChannel(channelId: string): Promise<void> {
-    const sock = this.connections.get(channelId);
-    if (sock) {
-      await sock.logout();
+    try {
+      console.log(`🔌 Disconnecting WhatsApp channel: ${channelId}`);
+      
+      const sock = this.connections.get(channelId);
+      if (sock) {
+        // First remove from connections map to prevent new events from being processed
+        this.connections.delete(channelId);
+        
+        // Update memory status to prevent event processing
+        this.connectionStatus.set(channelId, 'disconnecting');
+        
+        try {
+          // Gracefully logout from WhatsApp
+          await sock.logout();
+          console.log(`📱 Successfully logged out from WhatsApp for channel: ${channelId}`);
+        } catch (logoutError) {
+          console.warn(`⚠️ Error during logout for channel ${channelId}:`, logoutError);
+          // Continue with cleanup even if logout fails
+        }
+        
+        // Clean up memory status
+        this.connectionStatus.delete(channelId);
+        
+        // Update database status
+        await this.updateChannelStatus(channelId, 'disconnected');
+        
+        console.log(`✅ Channel ${channelId} disconnected successfully`);
+      } else {
+        console.log(`⚠️ Channel ${channelId} was not connected`);
+        // Still update status in case it was marked as active in DB
+        await this.updateChannelStatus(channelId, 'disconnected');
+      }
+    } catch (error) {
+      console.error(`❌ Error disconnecting channel ${channelId}:`, error);
+      // Ensure cleanup even on error
       this.connections.delete(channelId);
-      await this.updateChannelStatus(channelId, 'inactive');
-      console.log(`🚪 Channel ${channelId} disconnected`);
+      this.connectionStatus.delete(channelId);
+      await this.updateChannelStatus(channelId, 'error');
+      throw error;
     }
   }
 
