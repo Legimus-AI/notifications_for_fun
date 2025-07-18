@@ -62,6 +62,7 @@ const ChannelSchema = new mongoose_1.Schema({
             'connecting',
             'active',
             'inactive',
+            'disconnected',
             'error',
             'qr_ready',
             'pairing_code_ready',

@@ -78,10 +78,12 @@ class WhatsAppService extends events_1.EventEmitter {
             try {
                 console.log('🔄 Restoring active WhatsApp channels...');
                 // Find all channels that were active before server restart
+                // Exclude 'disconnected' channels to prevent restoration
                 const activeChannels = yield Channels_1.default.find({
                     type: 'whatsapp_automated',
                     status: {
                         $in: ['active', 'connecting', 'qr_ready', 'pairing_code_ready'],
+                        $nin: ['disconnected'],
                     },
                     isActive: true,
                 });
@@ -321,9 +323,15 @@ class WhatsAppService extends events_1.EventEmitter {
     handleConnectionUpdate(channelId, update, phoneNumber) {
         var _a, _b, _c;
         return __awaiter(this, void 0, void 0, function* () {
-            // Check if channel still exists before processing events
-            if (!this.connections.has(channelId)) {
+            // Check if channel still exists or is being disconnected before processing events
+            const currentStatus = this.connectionStatus.get(channelId);
+            if (!this.connections.has(channelId) && currentStatus !== 'disconnecting') {
                 console.log(`⚠️ Ignoring connection update for deleted channel: ${channelId}`);
+                return;
+            }
+            // Skip processing if channel is being disconnected or already disconnected
+            if (currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring connection update for ${currentStatus} channel: ${channelId}`);
                 return;
             }
             const { connection, lastDisconnect, qr } = update;
@@ -401,9 +409,10 @@ class WhatsAppService extends events_1.EventEmitter {
      */
     handleIncomingMessages(channelId, messageUpdate) {
         return __awaiter(this, void 0, void 0, function* () {
-            // Check if channel still exists before processing events
-            if (!this.connections.has(channelId)) {
-                console.log(`⚠️ Ignoring incoming message for deleted channel: ${channelId}`);
+            // Check if channel still exists or is being disconnected before processing events
+            const currentStatus = this.connectionStatus.get(channelId);
+            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring incoming message for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
                 return;
             }
             const { messages, type } = messageUpdate;
@@ -759,9 +768,10 @@ class WhatsAppService extends events_1.EventEmitter {
     handleMessageStatusUpdates(channelId, updates) {
         var _a, _b, _c, _d;
         return __awaiter(this, void 0, void 0, function* () {
-            // Check if channel still exists before processing events
-            if (!this.connections.has(channelId)) {
-                console.log(`⚠️ Ignoring message status update for deleted channel: ${channelId}`);
+            // Check if channel still exists or is being disconnected before processing events
+            const currentStatus = this.connectionStatus.get(channelId);
+            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring message status update for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
                 return;
             }
             for (const update of updates) {
@@ -797,9 +807,10 @@ class WhatsAppService extends events_1.EventEmitter {
      */
     handleIncomingCalls(channelId, callEvents) {
         return __awaiter(this, void 0, void 0, function* () {
-            // Check if channel still exists before processing events
-            if (!this.connections.has(channelId)) {
-                console.log(`⚠️ Ignoring incoming call for deleted channel: ${channelId}`);
+            // Check if channel still exists or is being disconnected before processing events
+            const currentStatus = this.connectionStatus.get(channelId);
+            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring incoming call for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
                 return;
             }
             for (const callEvent of callEvents) {
@@ -867,12 +878,42 @@ class WhatsAppService extends events_1.EventEmitter {
      */
     disconnectChannel(channelId) {
         return __awaiter(this, void 0, void 0, function* () {
-            const sock = this.connections.get(channelId);
-            if (sock) {
-                yield sock.logout();
+            try {
+                console.log(`🔌 Disconnecting WhatsApp channel: ${channelId}`);
+                const sock = this.connections.get(channelId);
+                if (sock) {
+                    // First remove from connections map to prevent new events from being processed
+                    this.connections.delete(channelId);
+                    // Update memory status to prevent event processing
+                    this.connectionStatus.set(channelId, 'disconnecting');
+                    try {
+                        // Gracefully logout from WhatsApp
+                        yield sock.logout();
+                        console.log(`📱 Successfully logged out from WhatsApp for channel: ${channelId}`);
+                    }
+                    catch (logoutError) {
+                        console.warn(`⚠️ Error during logout for channel ${channelId}:`, logoutError);
+                        // Continue with cleanup even if logout fails
+                    }
+                    // Clean up memory status
+                    this.connectionStatus.delete(channelId);
+                    // Update database status
+                    yield this.updateChannelStatus(channelId, 'disconnected');
+                    console.log(`✅ Channel ${channelId} disconnected successfully`);
+                }
+                else {
+                    console.log(`⚠️ Channel ${channelId} was not connected`);
+                    // Still update status in case it was marked as active in DB
+                    yield this.updateChannelStatus(channelId, 'disconnected');
+                }
+            }
+            catch (error) {
+                console.error(`❌ Error disconnecting channel ${channelId}:`, error);
+                // Ensure cleanup even on error
                 this.connections.delete(channelId);
-                yield this.updateChannelStatus(channelId, 'inactive');
-                console.log(`🚪 Channel ${channelId} disconnected`);
+                this.connectionStatus.delete(channelId);
+                yield this.updateChannelStatus(channelId, 'error');
+                throw error;
             }
         });
     }
