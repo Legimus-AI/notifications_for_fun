@@ -69,25 +69,32 @@ class WhatsAppController {
         return;
       }
 
-      // Check if already connected
+      // Force socket reset: close existing connection without clearing auth state
       const currentStatus = whatsAppService.getChannelStatus(channelId);
       if (currentStatus === 'active' || currentStatus === 'connecting') {
-        res.status(200).json({
-          ok: true,
-          message: `Channel is already ${currentStatus}`,
-          status: currentStatus,
-        });
-        return;
+        console.log(`🔄 Force resetting socket for channel ${channelId} (current status: ${currentStatus}) - preserving auth state`);
+        try {
+          // Reset socket connection without logout (preserves auth state, no QR needed)
+          await whatsAppService.resetSocketConnection(channelId);
+          // Give a moment for cleanup
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (resetError) {
+          console.warn(`⚠️ Error during socket reset for ${channelId}:`, resetError);
+          // Continue with connection attempt even if reset fails
+        }
       }
 
-      // Start connection
+      // Start fresh connection
+      console.log(`🚀 Starting fresh connection for channel ${channelId}`);
       await whatsAppService.connectChannel(channelId, phoneNumber);
 
       res.status(200).json({
         ok: true,
-        message: 'Connection initiated',
+        message: 'Socket reset and fresh connection initiated (auth state preserved, no QR needed)',
         channelId,
         status: 'connecting',
+        socketReset: true,
+        authPreserved: true,
       });
     } catch (error) {
       utils.handleError(res, error);
