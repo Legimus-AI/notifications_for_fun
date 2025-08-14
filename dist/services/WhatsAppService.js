@@ -411,8 +411,14 @@ class WhatsAppService extends events_1.EventEmitter {
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
-            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
-                console.log(`⚠️ Ignoring incoming message for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
+            if (!this.connections.has(channelId) ||
+                currentStatus === 'disconnecting' ||
+                currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring incoming message for ${currentStatus === 'disconnecting'
+                    ? 'disconnecting'
+                    : currentStatus === 'disconnected'
+                        ? 'disconnected'
+                        : 'deleted'} channel: ${channelId}`);
                 return;
             }
             const { messages, type } = messageUpdate;
@@ -770,15 +776,21 @@ class WhatsAppService extends events_1.EventEmitter {
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
-            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
-                console.log(`⚠️ Ignoring message status update for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
+            if (!this.connections.has(channelId) ||
+                currentStatus === 'disconnecting' ||
+                currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring message status update for ${currentStatus === 'disconnecting'
+                    ? 'disconnecting'
+                    : currentStatus === 'disconnected'
+                        ? 'disconnected'
+                        : 'deleted'} channel: ${channelId}`);
                 return;
             }
             for (const update of updates) {
                 console.log(`📊 Message status update for ${channelId}:`, JSON.stringify(update, null, 2));
                 // Format status update to webhook payload format
                 const payload = yield this.formatStatusToWebhookPayload(channelId, update);
-                console.log("Status payload formatted:", JSON.stringify(payload, null, 2));
+                console.log('Status payload formatted:', JSON.stringify(payload, null, 2));
                 if (payload) {
                     // Emit status update event
                     this.emit('message-status', channelId, payload);
@@ -809,8 +821,14 @@ class WhatsAppService extends events_1.EventEmitter {
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
-            if (!this.connections.has(channelId) || currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
-                console.log(`⚠️ Ignoring incoming call for ${currentStatus === 'disconnecting' ? 'disconnecting' : currentStatus === 'disconnected' ? 'disconnected' : 'deleted'} channel: ${channelId}`);
+            if (!this.connections.has(channelId) ||
+                currentStatus === 'disconnecting' ||
+                currentStatus === 'disconnected') {
+                console.log(`⚠️ Ignoring incoming call for ${currentStatus === 'disconnecting'
+                    ? 'disconnecting'
+                    : currentStatus === 'disconnected'
+                        ? 'disconnected'
+                        : 'deleted'} channel: ${channelId}`);
                 return;
             }
             for (const callEvent of callEvents) {
@@ -819,7 +837,7 @@ class WhatsAppService extends events_1.EventEmitter {
                 yield WhatsAppEvents_1.default.create({ channelId, payload: callEvent });
                 // Format call event to webhook payload format
                 const payload = yield this.formatCallToWebhookPayload(channelId, callEvent);
-                console.log("Call payload formatted:", JSON.stringify(payload, null, 2));
+                console.log('Call payload formatted:', JSON.stringify(payload, null, 2));
                 if (payload) {
                     // Emit call event
                     this.emit('call', channelId, payload);
@@ -1193,7 +1211,7 @@ class WhatsAppService extends events_1.EventEmitter {
         if (channelId) {
             // Clear cache entries for specific channel
             const keys = this.phoneValidationCache.keys();
-            const channelKeys = keys.filter(key => key.startsWith(`${channelId}:`));
+            const channelKeys = keys.filter((key) => key.startsWith(`${channelId}:`));
             this.phoneValidationCache.del(channelKeys);
             console.log(`🧹 Cleared phone validation cache for channel: ${channelId} (${channelKeys.length} entries)`);
         }
@@ -1270,6 +1288,7 @@ class WhatsAppService extends events_1.EventEmitter {
      * This handles both single and bulk messages, including replies with context.
      */
     sendMessageFromApi(channelId, payload) {
+        var _a;
         return __awaiter(this, void 0, void 0, function* () {
             const sock = this.connections.get(channelId);
             if (!sock) {
@@ -1343,18 +1362,33 @@ class WhatsAppService extends events_1.EventEmitter {
                 default:
                     throw new Error(`Unsupported message type: "${payload.type}"`);
             }
-            console.log("Quoted message:", quotedMessage);
+            console.log('Quoted message:', quotedMessage);
             try {
                 let message;
                 // Send message with quoted reply if context is provided
                 if (quotedMessage) {
                     console.log(`📝 Sending reply to message: ${payload.context.message_id}`);
-                    message = yield sock.sendMessage(to, messageContent, { quoted: quotedMessage });
+                    message = yield sock.sendMessage(to, messageContent, {
+                        quoted: quotedMessage,
+                    });
                 }
                 else {
                     message = yield sock.sendMessage(to, messageContent);
                 }
                 console.log(`📤 Message sent from ${channelId} to ${to}${quotedMessage ? ' (reply)' : ''}`);
+                // Save the sent message to WhatsAppEvents for future reply reference
+                try {
+                    const whatsAppEvent = new WhatsAppEvents_1.default({
+                        channelId: channelId,
+                        payload: message, // Save the full message object returned by Baileys
+                    });
+                    yield whatsAppEvent.save();
+                    console.log(`💾 Sent message saved to WhatsAppEvents: ${(_a = message === null || message === void 0 ? void 0 : message.key) === null || _a === void 0 ? void 0 : _a.id}`);
+                }
+                catch (saveError) {
+                    console.error(`❌ Error saving sent message to WhatsAppEvents:`, saveError);
+                    // Don't throw error here - message was sent successfully, saving is just for reference
+                }
                 return message;
             }
             catch (error) {
