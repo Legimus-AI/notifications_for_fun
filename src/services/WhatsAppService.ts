@@ -386,7 +386,7 @@ export class WhatsAppService extends EventEmitter {
       );
       return;
     }
-    
+
     // Skip processing if channel is being disconnected or already disconnected
     if (currentStatus === 'disconnecting' || currentStatus === 'disconnected') {
       console.log(
@@ -1057,20 +1057,60 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Resets socket connection without clearing auth state (no QR needed on reconnect)
+   */
+  async resetSocketConnection(channelId: string): Promise<void> {
+    try {
+      console.log(`🔄 Resetting socket connection for channel: ${channelId} (preserving auth state)`);
+
+      const sock = this.connections.get(channelId);
+      if (sock) {
+        // Remove from connections map to prevent new events from being processed
+        this.connections.delete(channelId);
+
+        // Update memory status to indicate reset
+        this.connectionStatus.set(channelId, 'resetting');
+
+        try {
+          // Just end the socket connection without logout (preserves auth state)
+          sock.end(undefined);
+          console.log(`🔌 Socket connection ended for channel: ${channelId}`);
+        } catch (endError) {
+          console.warn(`⚠️ Error ending socket for channel ${channelId}:`, endError);
+          // Continue with cleanup even if end fails
+        }
+
+        // Update database status
+        await this.updateChannelStatus(channelId, 'reset');
+
+        console.log(`✅ Channel ${channelId} socket reset successfully (auth state preserved)`);
+      } else {
+        console.log(`⚠️ No active socket found for channel ${channelId}`);
+      }
+    } catch (error) {
+      console.error(`❌ Error resetting socket for channel ${channelId}:`, error);
+      // Ensure cleanup even on error
+      this.connections.delete(channelId);
+      this.connectionStatus.set(channelId, 'error');
+      throw error;
+    }
+  }
+
+  /**
    * Disconnects a channel
    */
   async disconnectChannel(channelId: string): Promise<void> {
     try {
       console.log(`🔌 Disconnecting WhatsApp channel: ${channelId}`);
-      
+
       const sock = this.connections.get(channelId);
       if (sock) {
         // First remove from connections map to prevent new events from being processed
         this.connections.delete(channelId);
-        
+
         // Update memory status to prevent event processing
         this.connectionStatus.set(channelId, 'disconnecting');
-        
+
         try {
           // Gracefully logout from WhatsApp
           await sock.logout();
@@ -1079,13 +1119,13 @@ export class WhatsAppService extends EventEmitter {
           console.warn(`⚠️ Error during logout for channel ${channelId}:`, logoutError);
           // Continue with cleanup even if logout fails
         }
-        
+
         // Clean up memory status
         this.connectionStatus.delete(channelId);
-        
+
         // Update database status
         await this.updateChannelStatus(channelId, 'disconnected');
-        
+
         console.log(`✅ Channel ${channelId} disconnected successfully`);
       } else {
         console.log(`⚠️ Channel ${channelId} was not connected`);
