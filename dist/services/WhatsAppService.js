@@ -874,6 +874,45 @@ class WhatsAppService extends events_1.EventEmitter {
         });
     }
     /**
+     * Resets socket connection without clearing auth state (no QR needed on reconnect)
+     */
+    resetSocketConnection(channelId) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                console.log(`🔄 Resetting socket connection for channel: ${channelId} (preserving auth state)`);
+                const sock = this.connections.get(channelId);
+                if (sock) {
+                    // Remove from connections map to prevent new events from being processed
+                    this.connections.delete(channelId);
+                    // Update memory status to indicate reset
+                    this.connectionStatus.set(channelId, 'resetting');
+                    try {
+                        // Just end the socket connection without logout (preserves auth state)
+                        sock.end(undefined);
+                        console.log(`🔌 Socket connection ended for channel: ${channelId}`);
+                    }
+                    catch (endError) {
+                        console.warn(`⚠️ Error ending socket for channel ${channelId}:`, endError);
+                        // Continue with cleanup even if end fails
+                    }
+                    // Update database status
+                    yield this.updateChannelStatus(channelId, 'reset');
+                    console.log(`✅ Channel ${channelId} socket reset successfully (auth state preserved)`);
+                }
+                else {
+                    console.log(`⚠️ No active socket found for channel ${channelId}`);
+                }
+            }
+            catch (error) {
+                console.error(`❌ Error resetting socket for channel ${channelId}:`, error);
+                // Ensure cleanup even on error
+                this.connections.delete(channelId);
+                this.connectionStatus.set(channelId, 'error');
+                throw error;
+            }
+        });
+    }
+    /**
      * Disconnects a channel
      */
     disconnectChannel(channelId) {
