@@ -10,6 +10,7 @@ import makeWASocket, {
   proto,
   WAMessage,
   GroupMetadata,
+  makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -160,7 +161,7 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Creates MongoDB-based auth state for production use
+   * Creates MongoDB-based auth state for production use with LID support
    */
   private async createMongoAuthState(
     channelId: string,
@@ -192,40 +193,57 @@ export class WhatsAppService extends EventEmitter {
       keys.set(keyDoc.keyId, convertedKeyData);
     });
 
+    // Create base key store
+    const baseKeyStore = {
+      get: (type: string, ids: string[]) => {
+        const result: { [id: string]: any } = {};
+        ids.forEach((id) => {
+          const key = keys.get(`${type}:${id}`);
+          if (key) result[id] = key;
+        });
+        return result;
+      },
+      set: async (data: any) => {
+        const promises: Promise<any>[] = [];
+
+        for (const category in data) {
+          for (const id in data[category]) {
+            const keyId = `${category}:${id}`;
+            const keyData = data[category][id];
+
+            keys.set(keyId, keyData);
+
+            promises.push(
+              WhatsAppAuthKey.findOneAndUpdate(
+                { channelId, keyId },
+                { keyData },
+                { upsert: true, new: true },
+              ),
+            );
+          }
+        }
+
+        await Promise.all(promises);
+      },
+    };
+
+    // Wrap with cacheable signal key store for LID support (Baileys 7 requirement)
+    // Create a simple logger that matches Baileys' ILogger interface
+    const logger = {
+      level: 'info' as const,
+      child: () => logger,
+      trace: (...args: any[]) => console.debug(...args),
+      debug: (...args: any[]) => console.debug(...args),
+      info: (...args: any[]) => console.info(...args),
+      warn: (...args: any[]) => console.warn(...args),
+      error: (...args: any[]) => console.error(...args),
+      fatal: (...args: any[]) => console.error(...args),
+    };
+    const cachedKeyStore = makeCacheableSignalKeyStore(baseKeyStore, logger);
+
     return {
       creds,
-      keys: {
-        get: (type: string, ids: string[]) => {
-          const result: { [id: string]: any } = {};
-          ids.forEach((id) => {
-            const key = keys.get(`${type}:${id}`);
-            if (key) result[id] = key;
-          });
-          return result;
-        },
-        set: async (data: any) => {
-          const promises: Promise<any>[] = [];
-
-          for (const category in data) {
-            for (const id in data[category]) {
-              const keyId = `${category}:${id}`;
-              const keyData = data[category][id];
-
-              keys.set(keyId, keyData);
-
-              promises.push(
-                WhatsAppAuthKey.findOneAndUpdate(
-                  { channelId, keyId },
-                  { keyData },
-                  { upsert: true, new: true },
-                ),
-              );
-            }
-          }
-
-          await Promise.all(promises);
-        },
-      },
+      keys: cachedKeyStore,
     };
   }
 
@@ -363,6 +381,18 @@ export class WhatsAppService extends EventEmitter {
       sock.ev.on('call', async (callEvents) => {
         await this.handleIncomingCalls(channelId, callEvents);
       });
+
+      // Handle LID mapping updates (Baileys 7 requirement)
+      sock.ev.on('lid-mapping.update', async (mapping) => {
+        console.log(
+          `🔄 LID mapping update for channel ${channelId}:`,
+          JSON.stringify(mapping, null, 2),
+        );
+        // LID mappings are automatically stored in sock.signalRepository.lidMapping
+        // You can access them via:
+        // - sock.signalRepository.lidMapping.getLIDForPN(pn)
+        // - sock.signalRepository.lidMapping.getPNForLID(lid)
+      });
     } catch (error) {
       console.error(`❌ Error connecting channel ${channelId}:`, error);
       await this.updateChannelStatus(channelId, 'error');
@@ -493,7 +523,47 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Handles incoming messages
+   * Resolves LID to actual phone number JID
+   * Baileys 7 LID handling: messages can come from @lid addresses
+   */
+  private resolveJidFromMessage(message: WAMessage): string {
+    let jid = message.key.remoteJid;
+
+    // Check if remoteJid is a LID (@lid)
+    if (jid && /@lid/.test(jid)) {
+      console.log(`🔍 LID detected in remoteJid: ${jid}`);
+
+      // For DMs: use senderPn (remoteJidAlt in message key)
+      if (message.key.remoteJidAlt) {
+        jid = message.key.remoteJidAlt;
+        console.log(
+          `✅ Resolved LID to actual number using remoteJidAlt: ${jid}`,
+        );
+      }
+      // For Groups: use participantAlt if available
+      else if (message.key.participantAlt) {
+        jid = message.key.participantAlt;
+        console.log(
+          `✅ Resolved LID to actual number using participantAlt: ${jid}`,
+        );
+      }
+      // Fallback: check if participant has the actual number
+      else if (
+        message.key.participant &&
+        !/@lid/.test(message.key.participant)
+      ) {
+        jid = message.key.participant;
+        console.log(`✅ Using participant as actual number: ${jid}`);
+      } else {
+        console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+      }
+    }
+
+    return jid || '';
+  }
+
+  /**
+   * Handles incoming messages with LID support
    */
   private async handleIncomingMessages(channelId: string, messageUpdate: any) {
     // Check if channel still exists or is being disconnected before processing events
@@ -520,6 +590,18 @@ export class WhatsAppService extends EventEmitter {
     if (type !== 'notify') return;
 
     for (const message of messages) {
+      // Resolve LID to actual phone number before processing (Baileys 7 requirement)
+      const originalRemoteJid = message.key.remoteJid;
+      const resolvedJid = this.resolveJidFromMessage(message);
+
+      // Update the remoteJid with the resolved actual phone number
+      if (resolvedJid !== originalRemoteJid) {
+        console.log(
+          `🔄 Replacing LID ${originalRemoteJid} with actual number ${resolvedJid}`,
+        );
+        message.key.remoteJid = resolvedJid;
+      }
+
       await WhatsAppEvents.create({ channelId, payload: message });
 
       // Skip if message is from us
