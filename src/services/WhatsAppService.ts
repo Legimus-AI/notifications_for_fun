@@ -523,10 +523,13 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Resolves LID to actual phone number JID
+   * Resolves LID to actual phone number JID using Baileys 7 LID mapping
    * Baileys 7 LID handling: messages can come from @lid addresses
    */
-  private resolveJidFromMessage(message: WAMessage): string {
+  private async resolveJidFromMessage(
+    channelId: string,
+    message: WAMessage,
+  ): Promise<string> {
     let jid = message.key.remoteJid;
 
     // Check if remoteJid is a LID (@lid)
@@ -554,8 +557,30 @@ export class WhatsAppService extends EventEmitter {
       ) {
         jid = message.key.participant;
         console.log(`✅ Using participant as actual number: ${jid}`);
-      } else {
-        console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+      }
+      // Last resort: use Baileys' LID mapping store
+      else {
+        const sock = this.connections.get(channelId);
+        if (sock && sock.signalRepository?.lidMapping) {
+          try {
+            const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+            if (pn) {
+              jid = pn;
+              console.log(
+                `✅ Resolved LID to PN using lidMapping.getPNForLID: ${jid}`,
+              );
+            } else {
+              console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+            }
+          } catch (error) {
+            console.error(
+              `❌ Error using lidMapping.getPNForLID for ${jid}:`,
+              error,
+            );
+          }
+        } else {
+          console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+        }
       }
     }
 
@@ -592,7 +617,7 @@ export class WhatsAppService extends EventEmitter {
     for (const message of messages) {
       // Resolve LID to actual phone number before processing (Baileys 7 requirement)
       const originalRemoteJid = message.key.remoteJid;
-      const resolvedJid = this.resolveJidFromMessage(message);
+      const resolvedJid = await this.resolveJidFromMessage(channelId, message);
 
       // Update the remoteJid with the resolved actual phone number
       if (resolvedJid !== originalRemoteJid) {
@@ -1029,7 +1054,41 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Handles message status updates (sent, delivered, read)
+   * Resolves a JID (can be LID or PN) to a phone number JID
+   */
+  private async resolveJid(channelId: string, jid: string): Promise<string> {
+    if (!jid) return jid;
+
+    // Check if JID is a LID (@lid)
+    if (/@lid/.test(jid)) {
+      console.log(`🔍 LID detected in JID: ${jid}`);
+
+      const sock = this.connections.get(channelId);
+      if (sock && sock.signalRepository?.lidMapping) {
+        try {
+          const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+          if (pn) {
+            console.log(
+              `✅ Resolved LID to PN using lidMapping: ${jid} → ${pn}`,
+            );
+            return pn;
+          } else {
+            console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+          }
+        } catch (error) {
+          console.error(
+            `❌ Error using lidMapping.getPNForLID for ${jid}:`,
+            error,
+          );
+        }
+      }
+    }
+
+    return jid;
+  }
+
+  /**
+   * Handles message status updates (sent, delivered, read) with LID resolution
    */
   private async handleMessageStatusUpdates(channelId: string, updates: any[]) {
     // Check if channel still exists or is being disconnected before processing events
@@ -1057,15 +1116,24 @@ export class WhatsAppService extends EventEmitter {
         JSON.stringify(update, null, 2),
       );
 
+      // Resolve LID to PN if present in remoteJid
+      if (update.key?.remoteJid) {
+        const originalJid = update.key.remoteJid;
+        const resolvedJid = await this.resolveJid(channelId, originalJid);
+        if (resolvedJid !== originalJid) {
+          console.log(
+            `🔄 Status update - Resolved JID: ${originalJid} → ${resolvedJid}`,
+          );
+          update.key.remoteJid = resolvedJid;
+        }
+      }
+
       // Format status update to webhook payload format
       const payload = await this.formatStatusToWebhookPayload(
         channelId,
         update,
       );
-      console.log(
-        'Status payload formatted:',
-        JSON.stringify(payload, null, 2),
-      );
+      console.log('📊 Formatted status', JSON.stringify(payload, null, 2));
 
       if (payload) {
         // Emit status update event
