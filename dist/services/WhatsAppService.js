@@ -428,35 +428,57 @@ class WhatsAppService extends events_1.EventEmitter {
         });
     }
     /**
-     * Resolves LID to actual phone number JID
+     * Resolves LID to actual phone number JID using Baileys 7 LID mapping
      * Baileys 7 LID handling: messages can come from @lid addresses
      */
-    resolveJidFromMessage(message) {
-        let jid = message.key.remoteJid;
-        // Check if remoteJid is a LID (@lid)
-        if (jid && /@lid/.test(jid)) {
-            console.log(`🔍 LID detected in remoteJid: ${jid}`);
-            // For DMs: use senderPn (remoteJidAlt in message key)
-            if (message.key.remoteJidAlt) {
-                jid = message.key.remoteJidAlt;
-                console.log(`✅ Resolved LID to actual number using remoteJidAlt: ${jid}`);
+    resolveJidFromMessage(channelId, message) {
+        var _a;
+        return __awaiter(this, void 0, void 0, function* () {
+            let jid = message.key.remoteJid;
+            // Check if remoteJid is a LID (@lid)
+            if (jid && /@lid/.test(jid)) {
+                console.log(`🔍 LID detected in remoteJid: ${jid}`);
+                // For DMs: use senderPn (remoteJidAlt in message key)
+                if (message.key.remoteJidAlt) {
+                    jid = message.key.remoteJidAlt;
+                    console.log(`✅ Resolved LID to actual number using remoteJidAlt: ${jid}`);
+                }
+                // For Groups: use participantAlt if available
+                else if (message.key.participantAlt) {
+                    jid = message.key.participantAlt;
+                    console.log(`✅ Resolved LID to actual number using participantAlt: ${jid}`);
+                }
+                // Fallback: check if participant has the actual number
+                else if (message.key.participant &&
+                    !/@lid/.test(message.key.participant)) {
+                    jid = message.key.participant;
+                    console.log(`✅ Using participant as actual number: ${jid}`);
+                }
+                // Last resort: use Baileys' LID mapping store
+                else {
+                    const sock = this.connections.get(channelId);
+                    if (sock && ((_a = sock.signalRepository) === null || _a === void 0 ? void 0 : _a.lidMapping)) {
+                        try {
+                            const pn = yield sock.signalRepository.lidMapping.getPNForLID(jid);
+                            if (pn) {
+                                jid = pn;
+                                console.log(`✅ Resolved LID to PN using lidMapping.getPNForLID: ${jid}`);
+                            }
+                            else {
+                                console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+                            }
+                        }
+                        catch (error) {
+                            console.error(`❌ Error using lidMapping.getPNForLID for ${jid}:`, error);
+                        }
+                    }
+                    else {
+                        console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+                    }
+                }
             }
-            // For Groups: use participantAlt if available
-            else if (message.key.participantAlt) {
-                jid = message.key.participantAlt;
-                console.log(`✅ Resolved LID to actual number using participantAlt: ${jid}`);
-            }
-            // Fallback: check if participant has the actual number
-            else if (message.key.participant &&
-                !/@lid/.test(message.key.participant)) {
-                jid = message.key.participant;
-                console.log(`✅ Using participant as actual number: ${jid}`);
-            }
-            else {
-                console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
-            }
-        }
-        return jid || '';
+            return jid || '';
+        });
     }
     /**
      * Handles incoming messages with LID support
@@ -481,7 +503,7 @@ class WhatsAppService extends events_1.EventEmitter {
             for (const message of messages) {
                 // Resolve LID to actual phone number before processing (Baileys 7 requirement)
                 const originalRemoteJid = message.key.remoteJid;
-                const resolvedJid = this.resolveJidFromMessage(message);
+                const resolvedJid = yield this.resolveJidFromMessage(channelId, message);
                 // Update the remoteJid with the resolved actual phone number
                 if (resolvedJid !== originalRemoteJid) {
                     console.log(`🔄 Replacing LID ${originalRemoteJid} with actual number ${resolvedJid}`);
@@ -831,10 +853,41 @@ class WhatsAppService extends events_1.EventEmitter {
         });
     }
     /**
-     * Handles message status updates (sent, delivered, read)
+     * Resolves a JID (can be LID or PN) to a phone number JID
+     */
+    resolveJid(channelId, jid) {
+        var _a;
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!jid)
+                return jid;
+            // Check if JID is a LID (@lid)
+            if (/@lid/.test(jid)) {
+                console.log(`🔍 LID detected in JID: ${jid}`);
+                const sock = this.connections.get(channelId);
+                if (sock && ((_a = sock.signalRepository) === null || _a === void 0 ? void 0 : _a.lidMapping)) {
+                    try {
+                        const pn = yield sock.signalRepository.lidMapping.getPNForLID(jid);
+                        if (pn) {
+                            console.log(`✅ Resolved LID to PN using lidMapping: ${jid} → ${pn}`);
+                            return pn;
+                        }
+                        else {
+                            console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+                        }
+                    }
+                    catch (error) {
+                        console.error(`❌ Error using lidMapping.getPNForLID for ${jid}:`, error);
+                    }
+                }
+            }
+            return jid;
+        });
+    }
+    /**
+     * Handles message status updates (sent, delivered, read) with LID resolution
      */
     handleMessageStatusUpdates(channelId, updates) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e;
         return __awaiter(this, void 0, void 0, function* () {
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
@@ -850,14 +903,23 @@ class WhatsAppService extends events_1.EventEmitter {
             }
             for (const update of updates) {
                 console.log(`📊 Message status update for ${channelId}:`, JSON.stringify(update, null, 2));
+                // Resolve LID to PN if present in remoteJid
+                if ((_a = update.key) === null || _a === void 0 ? void 0 : _a.remoteJid) {
+                    const originalJid = update.key.remoteJid;
+                    const resolvedJid = yield this.resolveJid(channelId, originalJid);
+                    if (resolvedJid !== originalJid) {
+                        console.log(`🔄 Status update - Resolved JID: ${originalJid} → ${resolvedJid}`);
+                        update.key.remoteJid = resolvedJid;
+                    }
+                }
                 // Format status update to webhook payload format
                 const payload = yield this.formatStatusToWebhookPayload(channelId, update);
-                console.log('Status payload formatted:', JSON.stringify(payload, null, 2));
+                console.log('📊 Formatted status', JSON.stringify(payload, null, 2));
                 if (payload) {
                     // Emit status update event
                     this.emit('message-status', channelId, payload);
                     // Determine webhook event type based on status from the formatted payload
-                    const webhookStatus = (_d = (_c = (_b = (_a = payload.entry[0]) === null || _a === void 0 ? void 0 : _a.changes[0]) === null || _b === void 0 ? void 0 : _b.value) === null || _c === void 0 ? void 0 : _c.statuses[0]) === null || _d === void 0 ? void 0 : _d.status;
+                    const webhookStatus = (_e = (_d = (_c = (_b = payload.entry[0]) === null || _b === void 0 ? void 0 : _b.changes[0]) === null || _c === void 0 ? void 0 : _c.value) === null || _d === void 0 ? void 0 : _d.statuses[0]) === null || _e === void 0 ? void 0 : _e.status;
                     let webhookEventType = 'message.status';
                     if (webhookStatus === 'sent') {
                         webhookEventType = 'message.sent';
