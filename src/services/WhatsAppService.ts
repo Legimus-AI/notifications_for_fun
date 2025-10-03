@@ -525,30 +525,50 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Resolves LID to actual phone number JID using Baileys 7 LID mapping
    * Baileys 7 LID handling: messages can come from @lid addresses
+   * Returns both the resolved JID and whether it was successfully mapped
    */
   private async resolveJidFromMessage(
     channelId: string,
     message: WAMessage,
-  ): Promise<string> {
+  ): Promise<{ jid: string; isUnresolvedLid: boolean }> {
     let jid = message.key.remoteJid;
+    const originalJid = jid;
+    let isUnresolvedLid = false;
 
     // Check if remoteJid is a LID (@lid)
     if (jid && /@lid/.test(jid)) {
       console.log(`🔍 LID detected in remoteJid: ${jid}`);
+      console.log(
+        `📋 Message key details:`,
+        JSON.stringify(
+          {
+            remoteJid: message.key.remoteJid,
+            remoteJidAlt: message.key.remoteJidAlt,
+            participant: message.key.participant,
+            participantAlt: message.key.participantAlt,
+            fromMe: message.key.fromMe,
+            pushName: message.pushName,
+          },
+          null,
+          2,
+        ),
+      );
 
       // For DMs: use senderPn (remoteJidAlt in message key)
       if (message.key.remoteJidAlt) {
         jid = message.key.remoteJidAlt;
         console.log(
-          `✅ Resolved LID to actual number using remoteJidAlt: ${jid}`,
+          `✅ Resolved LID to actual number using remoteJidAlt: ${originalJid} → ${jid}`,
         );
+        console.log(`   Resolution method: remoteJidAlt field`);
       }
       // For Groups: use participantAlt if available
       else if (message.key.participantAlt) {
         jid = message.key.participantAlt;
         console.log(
-          `✅ Resolved LID to actual number using participantAlt: ${jid}`,
+          `✅ Resolved LID to actual number using participantAlt: ${originalJid} → ${jid}`,
         );
+        console.log(`   Resolution method: participantAlt field`);
       }
       // Fallback: check if participant has the actual number
       else if (
@@ -556,35 +576,100 @@ export class WhatsAppService extends EventEmitter {
         !/@lid/.test(message.key.participant)
       ) {
         jid = message.key.participant;
-        console.log(`✅ Using participant as actual number: ${jid}`);
+        console.log(
+          `✅ Using participant as actual number: ${originalJid} → ${jid}`,
+        );
+        console.log(`   Resolution method: participant field`);
       }
       // Last resort: use Baileys' LID mapping store
       else {
         const sock = this.connections.get(channelId);
+        console.log(
+          `🔧 Attempting LID mapping store resolution for: ${originalJid}`,
+        );
+        console.log(
+          `   Socket available: ${!!sock}`,
+        );
+        console.log(
+          `   signalRepository available: ${!!sock?.signalRepository}`,
+        );
+        console.log(
+          `   lidMapping available: ${!!sock?.signalRepository?.lidMapping}`,
+        );
+
         if (sock && sock.signalRepository?.lidMapping) {
           try {
-            const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+            console.log(
+              `🔍 Calling lidMapping.getPNForLID('${originalJid}')...`,
+            );
+            const pn = await sock.signalRepository.lidMapping.getPNForLID(
+              originalJid,
+            );
+            console.log(
+              `   lidMapping.getPNForLID result: ${pn ? pn : 'null'}`,
+            );
+
             if (pn) {
               jid = pn;
               console.log(
-                `✅ Resolved LID to PN using lidMapping.getPNForLID: ${jid}`,
+                `✅ Resolved LID to PN using lidMapping.getPNForLID: ${originalJid} → ${jid}`,
               );
+              console.log(`   Resolution method: Baileys LID mapping store`);
             } else {
-              console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+              console.warn(
+                `⚠️ LID mapping returned null for: ${originalJid}`,
+              );
+              console.warn(
+                `   Possible reasons:`,
+              );
+              console.warn(
+                `   - LID mapping not yet synced from WhatsApp server`,
+              );
+              console.warn(
+                `   - User has privacy settings that prevent mapping`,
+              );
+              console.warn(
+                `   - This is a new contact not in the mapping database`,
+              );
+              isUnresolvedLid = true;
             }
           } catch (error) {
             console.error(
-              `❌ Error using lidMapping.getPNForLID for ${jid}:`,
-              error,
+              `❌ Error using lidMapping.getPNForLID for ${originalJid}:`,
             );
+            console.error(`   Error details:`, error);
+            console.warn(
+              `   Falling back to extracting phone number from LID`,
+            );
+            isUnresolvedLid = true;
           }
         } else {
-          console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+          console.warn(
+            `⚠️ signalRepository.lidMapping not available for channel ${channelId}`,
+          );
+          console.warn(
+            `   Cannot use Baileys LID mapping - marking as unresolved`,
+          );
+          isUnresolvedLid = true;
         }
+      }
+
+      // Final check: if we still have a LID, mark as unresolved
+      if (/@lid/.test(jid)) {
+        console.warn(
+          `⚠️ LID resolution failed. JID still contains @lid suffix: ${jid}`,
+        );
+        console.warn(
+          `   Will extract phone number: ${jid.replace('@lid', '')}`,
+        );
+        console.warn(
+          `   Webhook will be marked with isLid: true`,
+        );
+        isUnresolvedLid = true;
       }
     }
 
-    return jid || '';
+    return { jid: jid || '', isUnresolvedLid };
   }
 
   /**
@@ -617,7 +702,11 @@ export class WhatsAppService extends EventEmitter {
     for (const message of messages) {
       // Resolve LID to actual phone number before processing (Baileys 7 requirement)
       const originalRemoteJid = message.key.remoteJid;
-      const resolvedJid = await this.resolveJidFromMessage(channelId, message);
+      const resolutionResult = await this.resolveJidFromMessage(
+        channelId,
+        message,
+      );
+      const { jid: resolvedJid, isUnresolvedLid } = resolutionResult;
 
       // Update the remoteJid with the resolved actual phone number
       if (resolvedJid !== originalRemoteJid) {
@@ -626,6 +715,9 @@ export class WhatsAppService extends EventEmitter {
         );
         message.key.remoteJid = resolvedJid;
       }
+
+      // Store unresolved LID flag in message metadata for webhook formatting
+      (message as any)._isUnresolvedLid = isUnresolvedLid;
 
       await WhatsAppEvents.create({ channelId, payload: message });
 
@@ -750,6 +842,9 @@ export class WhatsAppService extends EventEmitter {
                     from: removeSuffixFromJid(from),
                     id: messageId,
                     timestamp,
+                    ...((message as any)._isUnresolvedLid
+                      ? { isLid: true }
+                      : {}),
                   },
                 ],
               },
