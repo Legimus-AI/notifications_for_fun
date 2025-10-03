@@ -75,6 +75,18 @@ router.delete(
 );
 
 //
+// LID Management Routes
+//
+
+router.get('/channels/:channelId/lids', whatsAppController.getAllLids);
+router.get('/channels/:channelId/lids/count', whatsAppController.getLidsCount);
+router.get('/channels/:channelId/lids/:lid', whatsAppController.getPhoneNumberByLid);
+router.get(
+  '/channels/:channelId/lids/pn/:phoneNumber',
+  whatsAppController.getLidByPhoneNumber,
+);
+
+//
 // Debugging Routes
 //
 

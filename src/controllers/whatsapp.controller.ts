@@ -985,6 +985,97 @@ class WhatsAppController {
       utils.handleError(res, error);
     }
   };
+
+  /**
+   * Get all known LID mappings for a channel
+   */
+  public getAllLids = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const lids = await whatsAppService.getAllLids(channelId, limit, offset);
+
+      res.status(200).json(lids);
+    } catch (error) {
+      console.error('Error getting LIDs:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get count of known LID mappings for a channel
+   */
+  public getLidsCount = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+
+      const count = await whatsAppService.getLidsCount(channelId);
+
+      res.status(200).json({ count });
+    } catch (error) {
+      console.error('Error getting LIDs count:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get phone number by LID
+   */
+  public getPhoneNumberByLid = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId, lid } = req.params;
+
+      const result = await whatsAppService.getPhoneNumberByLid(channelId, lid);
+
+      if (!result) {
+        res.status(404).json({
+          error: 'LID_NOT_FOUND',
+          message: `No phone number found for LID: ${lid}`,
+        });
+        return;
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error getting phone number by LID:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get LID by phone number
+   */
+  public getLidByPhoneNumber = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId, phoneNumber } = req.params;
+
+      const result = await whatsAppService.getLidByPhoneNumber(
+        channelId,
+        phoneNumber,
+      );
+
+      if (!result) {
+        res.status(404).json({
+          error: 'PHONE_NUMBER_NOT_FOUND',
+          message: `No LID found for phone number: ${phoneNumber}`,
+        });
+        return;
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error getting LID by phone number:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
 }
 
 const whatsAppController = new WhatsAppController();
