@@ -719,7 +719,15 @@ export class WhatsAppService extends EventEmitter {
       // Store unresolved LID flag in message metadata for webhook formatting
       (message as any)._isUnresolvedLid = isUnresolvedLid;
 
-      await WhatsAppEvents.create({ channelId, payload: message });
+      // Determine if original message had LID
+      const wasLid = /@lid/.test(originalRemoteJid);
+
+      await WhatsAppEvents.create({
+        channelId,
+        payload: message,
+        isLid: wasLid,
+        isUnresolvedLid: isUnresolvedLid,
+      });
 
       // Skip if message is from us
       if (message.key.fromMe) continue;
@@ -2100,6 +2108,166 @@ export class WhatsAppService extends EventEmitter {
         error,
       );
       return undefined;
+    }
+  }
+
+  /**
+   * Get all known LID to phone number mappings for a channel
+   */
+  async getAllLids(
+    channelId: string,
+    limit: number = 100,
+    offset: number = 0,
+  ): Promise<Array<{ lid: string; pn: string }>> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      console.warn(
+        `⚠️ LID mapping not available for channel ${channelId}`,
+      );
+      return [];
+    }
+
+    try {
+      // Access the internal store if available
+      // Note: This is implementation-specific and may need adjustment based on Baileys version
+      const store = sock.signalRepository.lidMapping as any;
+      
+      // Try to get all mappings if the store exposes them
+      if (store.store && typeof store.store.toJSON === 'function') {
+        const allMappings = store.store.toJSON();
+        const mappings = Object.entries(allMappings).map(([lid, pn]) => ({
+          lid,
+          pn: pn as string,
+        }));
+        
+        // Apply pagination
+        return mappings.slice(offset, offset + limit);
+      }
+
+      console.warn(
+        `⚠️ LID mapping store structure not accessible for channel ${channelId}`,
+      );
+      return [];
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID mappings for ${channelId}:`,
+        error,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Get count of known LID mappings for a channel
+   */
+  async getLidsCount(channelId: string): Promise<number> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      return 0;
+    }
+
+    try {
+      const store = sock.signalRepository.lidMapping as any;
+      
+      if (store.store && typeof store.store.toJSON === 'function') {
+        const allMappings = store.store.toJSON();
+        return Object.keys(allMappings).length;
+      }
+
+      return 0;
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID count for ${channelId}:`,
+        error,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Get phone number for a specific LID
+   */
+  async getPhoneNumberByLid(
+    channelId: string,
+    lid: string,
+  ): Promise<{ lid: string; pn: string } | null> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      throw new Error(`LID mapping not available for channel ${channelId}`);
+    }
+
+    // Ensure LID has proper suffix
+    const formattedLid = lid.includes('@') ? lid : `${lid}@lid`;
+
+    try {
+      const pn = await sock.signalRepository.lidMapping.getPNForLID(
+        formattedLid,
+      );
+      
+      if (pn) {
+        return { lid: formattedLid, pn };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(
+        `❌ Error getting phone number for LID ${formattedLid}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get LID for a specific phone number
+   */
+  async getLidByPhoneNumber(
+    channelId: string,
+    phoneNumber: string,
+  ): Promise<{ lid: string; pn: string } | null> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      throw new Error(`LID mapping not available for channel ${channelId}`);
+    }
+
+    // Ensure phone number has proper suffix
+    let formattedPn = phoneNumber;
+    if (!phoneNumber.includes('@')) {
+      formattedPn = `${phoneNumber}@s.whatsapp.net`;
+    }
+
+    try {
+      const lid = await sock.signalRepository.lidMapping.getLIDForPN(
+        formattedPn,
+      );
+      
+      if (lid) {
+        return { lid, pn: formattedPn };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID for phone number ${formattedPn}:`,
+        error,
+      );
+      throw error;
     }
   }
 }

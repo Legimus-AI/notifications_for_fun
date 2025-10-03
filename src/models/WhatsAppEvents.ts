@@ -4,6 +4,8 @@ import mongoosePaginate from 'mongoose-paginate-v2';
 export interface IWhatsAppEvent extends Document {
   channelId: mongoose.Types.ObjectId;
   payload: any;
+  isLid: boolean;
+  isUnresolvedLid: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -18,6 +20,16 @@ const schema = new Schema(
     payload: {
       type: Schema.Types.Mixed,
       required: true,
+    },
+    isLid: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    isUnresolvedLid: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
   },
   {
