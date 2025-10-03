@@ -38,6 +38,16 @@ const schema = new mongoose_1.Schema({
         type: mongoose_1.Schema.Types.Mixed,
         required: true,
     },
+    isLid: {
+        type: Boolean,
+        default: false,
+        index: true,
+    },
+    isUnresolvedLid: {
+        type: Boolean,
+        default: false,
+        index: true,
+    },
 }, {
     versionKey: false,
     timestamps: true,

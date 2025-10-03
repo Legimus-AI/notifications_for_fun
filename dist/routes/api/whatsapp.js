@@ -41,6 +41,13 @@ router.get('/channels/:channelId/webhooks', whatsapp_controller_1.default.listWe
 router.put('/channels/:channelId/webhooks/:webhookId', whatsapp_controller_1.default.updateWebhook);
 router.delete('/channels/:channelId/webhooks/:webhookId', whatsapp_controller_1.default.deleteWebhook);
 //
+// LID Management Routes
+//
+router.get('/channels/:channelId/lids', whatsapp_controller_1.default.getAllLids);
+router.get('/channels/:channelId/lids/count', whatsapp_controller_1.default.getLidsCount);
+router.get('/channels/:channelId/lids/:lid', whatsapp_controller_1.default.getPhoneNumberByLid);
+router.get('/channels/:channelId/lids/pn/:phoneNumber', whatsapp_controller_1.default.getLidByPhoneNumber);
+//
 // Debugging Routes
 //
 router.delete('/channels/:channelId/auth', whatsapp_controller_1.default.clearAuthState);

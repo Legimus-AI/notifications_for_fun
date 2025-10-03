@@ -104,9 +104,18 @@ const formatJid = (jid) => {
 };
 exports.formatJid = formatJid;
 const removeSuffixFromJid = (jid) => {
-    const suffix = '@s.whatsapp.net';
-    if (jid.includes(suffix)) {
-        return jid.replace(suffix, '');
+    // Remove all WhatsApp JID suffixes including @lid, @s.whatsapp.net, @g.us, @broadcast, etc.
+    const suffixes = [
+        '@s.whatsapp.net',
+        '@lid',
+        '@g.us',
+        '@broadcast',
+        '@newsletter',
+    ];
+    for (const suffix of suffixes) {
+        if (jid.includes(suffix)) {
+            return jid.replace(suffix, '');
+        }
     }
     return jid;
 };
