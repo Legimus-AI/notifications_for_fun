@@ -1466,16 +1466,21 @@ class WhatsAppService extends events_1.EventEmitter {
                 throw new Error(`Channel ${channelId} is not connected`);
             }
             let to = payload.to;
-            const originalNumber = to; // Store original for validation
-            // check if to has @s.whatsapp.net
-            if (!to.includes('@s.whatsapp.net')) {
-                to = to + '@s.whatsapp.net';
-            }
             if (!to) {
                 throw new Error('Recipient "to" is required');
             }
-            // Validate phone number exists on WhatsApp (with caching)
-            yield this.validatePhoneNumberWithCache(channelId, originalNumber);
+            const originalNumber = to; // Store original for validation
+            // Format JID properly (handles @lid, @s.whatsapp.net, @g.us, etc.)
+            to = (0, utils_1.formatJid)(to);
+            const isLid = to.includes('@lid');
+            console.log(`📨 Sending message to: ${to}${isLid ? ' (LID)' : ''}`);
+            // Validate phone number exists on WhatsApp (skip for LIDs)
+            if (!isLid) {
+                yield this.validatePhoneNumberWithCache(channelId, originalNumber);
+            }
+            else {
+                console.log(`⏭️ Skipping phone validation for LID: ${to}`);
+            }
             let messageContent;
             // Handle context for replies
             let quotedMessage = null;
