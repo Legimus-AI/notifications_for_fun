@@ -117,11 +117,24 @@ const itemAlreadyExists = (
 };
 
 const formatJid = (jid: string): string => {
-  const suffix = '@s.whatsapp.net';
-  if (jid.includes(suffix)) {
-    return jid;
+  // List of valid WhatsApp JID suffixes
+  const suffixes = [
+    '@s.whatsapp.net',
+    '@lid',
+    '@g.us',
+    '@broadcast',
+    '@newsletter',
+  ];
+
+  // Check if jid already has a valid suffix
+  for (const suffix of suffixes) {
+    if (jid.includes(suffix)) {
+      return jid;
+    }
   }
-  return jid + suffix;
+
+  // Default to @s.whatsapp.net if no suffix present
+  return jid + '@s.whatsapp.net';
 };
 
 const removeSuffixFromJid = (jid: string): string => {
