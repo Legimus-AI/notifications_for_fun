@@ -627,6 +627,9 @@ class WhatsAppService extends events_1.EventEmitter {
             const messageId = message.key.id;
             const timestamp = message.messageTimestamp;
             const contactName = message.pushName || from;
+            const isUnresolvedLid = message._isUnresolvedLid;
+            // If it's an unresolved LID, keep the @lid suffix, otherwise remove all suffixes
+            const formattedFrom = isUnresolvedLid ? from : (0, utils_1.removeSuffixFromJid)(from);
             const payload = {
                 object: 'whatsapp_business_account',
                 entry: [
@@ -645,13 +648,11 @@ class WhatsAppService extends events_1.EventEmitter {
                                             profile: {
                                                 name: contactName,
                                             },
-                                            wa_id: (0, utils_1.removeSuffixFromJid)(from),
+                                            wa_id: formattedFrom,
                                         },
                                     ],
                                     messages: [
-                                        Object.assign({ from: (0, utils_1.removeSuffixFromJid)(from), id: messageId, timestamp }, (message._isUnresolvedLid
-                                            ? { isLid: true }
-                                            : {})),
+                                        Object.assign({ from: formattedFrom, id: messageId, timestamp }, (isUnresolvedLid ? { isLid: true } : {})),
                                     ],
                                 },
                                 field: 'messages',
