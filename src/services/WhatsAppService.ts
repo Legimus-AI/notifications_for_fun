@@ -26,7 +26,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
-import { removeSuffixFromJid } from '../helpers/utils';
+import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -1858,18 +1858,24 @@ export class WhatsAppService extends EventEmitter {
     }
 
     let to = payload.to;
-    const originalNumber = to; // Store original for validation
-
-    // check if to has @s.whatsapp.net
-    if (!to.includes('@s.whatsapp.net')) {
-      to = to + '@s.whatsapp.net';
-    }
     if (!to) {
       throw new Error('Recipient "to" is required');
     }
 
-    // Validate phone number exists on WhatsApp (with caching)
-    await this.validatePhoneNumberWithCache(channelId, originalNumber);
+    const originalNumber = to; // Store original for validation
+
+    // Format JID properly (handles @lid, @s.whatsapp.net, @g.us, etc.)
+    to = formatJid(to);
+    
+    const isLid = to.includes('@lid');
+    console.log(`📨 Sending message to: ${to}${isLid ? ' (LID)' : ''}`);
+
+    // Validate phone number exists on WhatsApp (skip for LIDs)
+    if (!isLid) {
+      await this.validatePhoneNumberWithCache(channelId, originalNumber);
+    } else {
+      console.log(`⏭️ Skipping phone validation for LID: ${to}`);
+    }
 
     let messageContent: any;
 
