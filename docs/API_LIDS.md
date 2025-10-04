@@ -164,10 +164,25 @@ When you receive a message from a user with LID privacy enabled, the webhook wil
 
 ```json
 {
-  "from": "200850521731320",
+  "from": "200850521731320@lid",  // ← LID kept with @lid suffix
   "id": "3A8D70A7741631BC0E51",
   "timestamp": 1759502141,
-  "isLid": true,  // ← Indicates this was a LID message
+  "isLid": true,  // ← Indicates this was an unresolved LID
+  "type": "text",
+  "text": {
+    "body": "Hello!"
+  }
+}
+```
+
+If the LID was successfully resolved to a phone number:
+
+```json
+{
+  "from": "200850521731320",  // ← Clean phone number (no @lid)
+  "id": "3A8D70A7741631BC0E51",
+  "timestamp": 1759502141,
+  // No isLid field - successfully resolved
   "type": "text",
   "text": {
     "body": "Hello!"
@@ -233,9 +248,14 @@ WhatsApp is transitioning toward:
 const message = webhookPayload.entry[0].changes[0].value.messages[0];
 
 if (message.isLid) {
+  console.log(`Unresolved LID detected: ${message.from}`); // e.g., "200850521731320@lid"
+  
+  // Extract the LID number (remove @lid suffix for API call)
+  const lidNumber = message.from.replace('@lid', '');
+  
   // Try to get phone number from LID
   const response = await fetch(
-    `/api/whatsapp/channels/${channelId}/lids/${message.from}`
+    `/api/whatsapp/channels/${channelId}/lids/${lidNumber}`
   );
   
   if (response.ok) {
@@ -243,7 +263,11 @@ if (message.isLid) {
     console.log(`Phone number found: ${pn}`);
   } else {
     console.log('Phone number not available - user has LID privacy enabled');
+    console.log(`You can still reply using the LID: ${message.from}`);
   }
+} else {
+  // Phone number is already clean (no @lid suffix)
+  console.log(`Regular message from: ${message.from}`); // e.g., "123456789"
 }
 ```
 
