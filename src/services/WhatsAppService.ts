@@ -823,6 +823,10 @@ export class WhatsAppService extends EventEmitter {
     const messageId = message.key.id;
     const timestamp = message.messageTimestamp;
     const contactName = message.pushName || from;
+    const isUnresolvedLid = (message as any)._isUnresolvedLid;
+
+    // If it's an unresolved LID, keep the @lid suffix, otherwise remove all suffixes
+    const formattedFrom = isUnresolvedLid ? from : removeSuffixFromJid(from);
 
     const payload: any = {
       object: 'whatsapp_business_account',
@@ -842,17 +846,15 @@ export class WhatsAppService extends EventEmitter {
                     profile: {
                       name: contactName,
                     },
-                    wa_id: removeSuffixFromJid(from),
+                    wa_id: formattedFrom,
                   },
                 ],
                 messages: [
                   {
-                    from: removeSuffixFromJid(from),
+                    from: formattedFrom,
                     id: messageId,
                     timestamp,
-                    ...((message as any)._isUnresolvedLid
-                      ? { isLid: true }
-                      : {}),
+                    ...(isUnresolvedLid ? { isLid: true } : {}),
                   },
                 ],
               },
