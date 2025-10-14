@@ -252,9 +252,13 @@ class WhatsAppService extends events_1.EventEmitter {
                 }
                 // Create auth state
                 const auth = yield this.createMongoAuthState(channelId);
+                // Fetch the latest WhatsApp Web version
+                const { version, isLatest } = yield (0, baileys_1.fetchLatestWaWebVersion)({});
+                console.log(`📱 Using WhatsApp Web version: ${version.join('.')} (isLatest: ${isLatest})`);
                 // Create socket with Chrome Windows simulation for anti-ban
                 // This simulates a real Chrome browser on Windows to reduce ban risk
                 const sock = (0, baileys_1.default)({
+                    version,
                     auth,
                     browser: baileys_1.Browsers.windows('WhatsApp Web'),
                     printQRInTerminal: false,
