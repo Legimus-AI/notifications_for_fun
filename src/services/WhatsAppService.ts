@@ -11,6 +11,7 @@ import makeWASocket, {
   WAMessage,
   GroupMetadata,
   makeCacheableSignalKeyStore,
+  fetchLatestWaWebVersion,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -293,9 +294,16 @@ export class WhatsAppService extends EventEmitter {
       // Create auth state
       const auth = await this.createMongoAuthState(channelId);
 
+      // Fetch the latest WhatsApp Web version
+      const { version, isLatest } = await fetchLatestWaWebVersion({});
+      console.log(
+        `📱 Using WhatsApp Web version: ${version.join('.')} (isLatest: ${isLatest})`,
+      );
+
       // Create socket with Chrome Windows simulation for anti-ban
       // This simulates a real Chrome browser on Windows to reduce ban risk
       const sock = makeWASocket({
+        version, // Use the fetched version
         auth,
         browser: Browsers.windows('WhatsApp Web'),
         printQRInTerminal: false,
