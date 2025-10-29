@@ -33,15 +33,42 @@ const getCountry = (req: Request): string =>
 
 const handleError = (
   res: Response,
-  err: { code: number; message: string },
+  err: { code?: number; message: string } | Error,
 ): void => {
   try {
     if (process.env.NODE_ENV !== 'production') {
       console.log(err);
     }
-    res.status(err?.code).json({
+
+    // Handle different error types
+    let statusCode = 500;
+    let message = 'Internal server error';
+
+    if (err instanceof Error) {
+      // Handle plain Error objects
+      message = err.message;
+      // Set appropriate status codes based on common error messages
+      if (err.message.includes('channel_not_found')) {
+        statusCode = 404;
+      } else if (err.message.includes('not_authed') || err.message.includes('invalid_auth')) {
+        statusCode = 401;
+      } else if (err.message.includes('permission') || err.message.includes('forbidden')) {
+        statusCode = 403;
+      } else if (err.message.includes('rate_limit')) {
+        statusCode = 429;
+      }
+    } else if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+      // Handle custom error objects with code and message
+      statusCode = err.code || 500;
+      message = err.message;
+    } else {
+      // Handle unknown error types
+      message = String(err);
+    }
+
+    res.status(statusCode).json({
       errors: {
-        msg: err?.message,
+        msg: message,
       },
     });
   } catch (error) {

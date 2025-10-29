@@ -14,6 +14,7 @@ import path from 'path';
 import { createServer } from 'http';
 import { SocketService } from './services/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
+import { slackService } from './services/SlackService';
 import { fileCleanupService } from './services/FileCleanupService';
 
 // =================================================================
@@ -142,6 +143,7 @@ const startServer = async () => {
     httpServer.listen(port, () => {
       console.log(`🚀 Server running on port ${port}`);
       console.log(`📱 WhatsApp service ready`);
+      console.log(`💬 Slack service ready`);
       console.log(
         `🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`,
       );
@@ -153,6 +155,13 @@ const startServer = async () => {
       await whatsAppService.restoreActiveChannels();
     }
     console.log('✅ WhatsApp channels restoration completed');
+
+    // Restore active Slack channels
+    console.log('🔄 Restoring active Slack channels...');
+    if (process.env.NODE_ENV === 'production') {
+      await slackService.restoreActiveChannels();
+    }
+    console.log('✅ Slack channels restoration completed');
 
     // Start file cleanup service
     console.log('🔄 Starting file cleanup service...');
