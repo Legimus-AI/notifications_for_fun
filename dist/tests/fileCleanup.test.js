@@ -14,7 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
-const FileCleanupService_1 = require("../services/FileCleanupService");
+const FileCleanupService_1 = require("../services/api/FileCleanupService");
 describe('FileCleanupService', () => {
     let cleanupService;
     let testDir;

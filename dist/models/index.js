@@ -35,7 +35,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.WhatsAppAuthKey = exports.WhatsAppAuthState = exports.UserAccess = exports.ForgotPassword = exports.Users = exports.Cities = exports.Webhook = exports.NotificationLog = exports.Channel = exports.ApiKey = void 0;
+exports.SlackEvents = exports.WhatsAppEvents = exports.WhatsAppAuthKey = exports.WhatsAppAuthState = exports.UserAccess = exports.ForgotPassword = exports.Users = exports.Cities = exports.Webhook = exports.NotificationLog = exports.Channel = exports.ApiKey = void 0;
 // Models
 var ApiKeys_1 = require("./ApiKeys");
 Object.defineProperty(exports, "ApiKey", { enumerable: true, get: function () { return __importDefault(ApiKeys_1).default; } });
@@ -56,6 +56,10 @@ Object.defineProperty(exports, "UserAccess", { enumerable: true, get: function (
 var WhatsAppAuthState_1 = require("./WhatsAppAuthState");
 Object.defineProperty(exports, "WhatsAppAuthState", { enumerable: true, get: function () { return WhatsAppAuthState_1.WhatsAppAuthState; } });
 Object.defineProperty(exports, "WhatsAppAuthKey", { enumerable: true, get: function () { return WhatsAppAuthState_1.WhatsAppAuthKey; } });
+var WhatsAppEvents_1 = require("./WhatsAppEvents");
+Object.defineProperty(exports, "WhatsAppEvents", { enumerable: true, get: function () { return __importDefault(WhatsAppEvents_1).default; } });
+var SlackEvents_1 = require("./SlackEvents");
+Object.defineProperty(exports, "SlackEvents", { enumerable: true, get: function () { return __importDefault(SlackEvents_1).default; } });
 // Dynamic model loader function
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));

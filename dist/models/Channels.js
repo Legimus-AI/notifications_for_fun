@@ -44,7 +44,7 @@ const ChannelSchema = new mongoose_1.Schema({
     type: {
         type: String,
         required: true,
-        enum: ['whatsapp_automated', 'email', 'sms', 'telegram'],
+        enum: ['whatsapp_automated', 'email', 'sms', 'telegram', 'slack'],
         index: true,
     },
     name: {

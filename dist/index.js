@@ -27,9 +27,11 @@ const i18n_1 = __importDefault(require("i18n"));
 const mongo_1 = __importDefault(require("./config/mongo"));
 const path_1 = __importDefault(require("path"));
 const http_1 = require("http");
-const SocketService_1 = require("./services/SocketService");
+const SocketService_1 = require("./services/api/SocketService");
 const WhatsAppService_1 = require("./services/WhatsAppService");
-const FileCleanupService_1 = require("./services/FileCleanupService");
+const SlackService_1 = require("./services/SlackService");
+const TelegramService_1 = require("./services/TelegramService");
+const FileCleanupService_1 = require("./services/api/FileCleanupService");
 console.log('Env variables:', process.env);
 console.log('Env variables:', process.env.DOMAIN);
 // =================================================================
@@ -132,6 +134,8 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         httpServer.listen(port, () => {
             console.log(`🚀 Server running on port ${port}`);
             console.log(`📱 WhatsApp service ready`);
+            console.log(`💬 Slack service ready`);
+            console.log(`📲 Telegram service ready`);
             console.log(`🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`);
         });
         // Restore active WhatsApp channels
@@ -140,6 +144,18 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
             yield WhatsAppService_1.whatsAppService.restoreActiveChannels();
         }
         console.log('✅ WhatsApp channels restoration completed');
+        // Restore active Slack channels
+        console.log('🔄 Restoring active Slack channels...');
+        if (process.env.NODE_ENV === 'production') {
+            yield SlackService_1.slackService.restoreActiveChannels();
+        }
+        console.log('✅ Slack channels restoration completed');
+        // Restore active Telegram channels
+        console.log('🔄 Restoring active Telegram channels...');
+        if (process.env.NODE_ENV === 'production') {
+            yield TelegramService_1.telegramService.restoreActiveChannels();
+        }
+        console.log('✅ Telegram channels restoration completed');
         // Start file cleanup service
         console.log('🔄 Starting file cleanup service...');
         FileCleanupService_1.fileCleanupService.start();

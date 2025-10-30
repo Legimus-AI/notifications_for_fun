@@ -10,7 +10,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_validator_1 = require("express-validator");
-const FileCleanupService_1 = require("../services/FileCleanupService");
+const FileCleanupService_1 = require("../services/api/FileCleanupService");
 /**
  * Controller for file cleanup service management
  */

@@ -34,9 +34,38 @@ const handleError = (res, err) => {
         if (process.env.NODE_ENV !== 'production') {
             console.log(err);
         }
-        res.status(err === null || err === void 0 ? void 0 : err.code).json({
+        // Handle different error types
+        let statusCode = 500;
+        let message = 'Internal server error';
+        if (err instanceof Error) {
+            // Handle plain Error objects
+            message = err.message;
+            // Set appropriate status codes based on common error messages
+            if (err.message.includes('channel_not_found')) {
+                statusCode = 404;
+            }
+            else if (err.message.includes('not_authed') || err.message.includes('invalid_auth')) {
+                statusCode = 401;
+            }
+            else if (err.message.includes('permission') || err.message.includes('forbidden')) {
+                statusCode = 403;
+            }
+            else if (err.message.includes('rate_limit')) {
+                statusCode = 429;
+            }
+        }
+        else if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+            // Handle custom error objects with code and message
+            statusCode = err.code || 500;
+            message = err.message;
+        }
+        else {
+            // Handle unknown error types
+            message = String(err);
+        }
+        res.status(statusCode).json({
             errors: {
-                msg: err === null || err === void 0 ? void 0 : err.message,
+                msg: message,
             },
         });
     }
@@ -96,17 +125,37 @@ const itemAlreadyExists = (err, item, reject, message) => {
 };
 exports.itemAlreadyExists = itemAlreadyExists;
 const formatJid = (jid) => {
-    const suffix = '@s.whatsapp.net';
-    if (jid.includes(suffix)) {
-        return jid;
+    // List of valid WhatsApp JID suffixes
+    const suffixes = [
+        '@s.whatsapp.net',
+        '@lid',
+        '@g.us',
+        '@broadcast',
+        '@newsletter',
+    ];
+    // Check if jid already has a valid suffix
+    for (const suffix of suffixes) {
+        if (jid.includes(suffix)) {
+            return jid;
+        }
     }
-    return jid + suffix;
+    // Default to @s.whatsapp.net if no suffix present
+    return jid + '@s.whatsapp.net';
 };
 exports.formatJid = formatJid;
 const removeSuffixFromJid = (jid) => {
-    const suffix = '@s.whatsapp.net';
-    if (jid.includes(suffix)) {
-        return jid.replace(suffix, '');
+    // Remove all WhatsApp JID suffixes including @lid, @s.whatsapp.net, @g.us, @broadcast, etc.
+    const suffixes = [
+        '@s.whatsapp.net',
+        '@lid',
+        '@g.us',
+        '@broadcast',
+        '@newsletter',
+    ];
+    for (const suffix of suffixes) {
+        if (jid.includes(suffix)) {
+            return jid.replace(suffix, '');
+        }
     }
     return jid;
 };

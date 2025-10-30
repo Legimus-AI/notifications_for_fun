@@ -5,7 +5,7 @@ import {
   CleanupStats,
   FileCleanupConfig,
   CleanupServiceStatus,
-} from '../types/FileCleanup';
+} from '../../types/FileCleanup';
 
 /**
  * Service to handle automatic cleanup of old files from storage directory
