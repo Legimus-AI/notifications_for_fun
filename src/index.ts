@@ -12,10 +12,10 @@ import i18n from 'i18n';
 import initMongo from './config/mongo';
 import path from 'path';
 import { createServer } from 'http';
-import { SocketService } from './services/SocketService';
+import { SocketService } from './services/api/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
 import { slackService } from './services/SlackService';
-import { fileCleanupService } from './services/FileCleanupService';
+import { fileCleanupService } from './services/api/FileCleanupService';
 
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
