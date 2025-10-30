@@ -8,6 +8,8 @@ export { default as Users } from './Users';
 export { default as ForgotPassword } from './ForgotPassword';
 export { default as UserAccess } from './UserAccess';
 export { WhatsAppAuthState, WhatsAppAuthKey } from './WhatsAppAuthState';
+export { default as WhatsAppEvents } from './WhatsAppEvents';
+export { default as SlackEvents } from './SlackEvents';
 
 // Interfaces
 export type { IApiKey } from './ApiKeys';
@@ -15,6 +17,7 @@ export type { IChannel, ChannelConfig } from './Channels';
 export type { INotification, NotificationPayload } from './NotificationLogs';
 export type { IWebhook } from './Webhooks';
 export type { IWhatsAppAuthState, IWhatsAppAuthKey } from './WhatsAppAuthState';
+export type { ISlackEvent } from './SlackEvents';
 
 // Dynamic model loader function
 import fs from 'fs';

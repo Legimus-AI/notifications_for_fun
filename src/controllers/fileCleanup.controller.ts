@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { validationResult } from 'express-validator';
-import { fileCleanupService } from '../services/FileCleanupService';
+import { fileCleanupService } from '../services/api/FileCleanupService';
 
 /**
  * Controller for file cleanup service management

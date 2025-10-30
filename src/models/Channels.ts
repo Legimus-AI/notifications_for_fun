@@ -37,6 +37,17 @@ interface TelegramConfig {
   botUsername?: string;
 }
 
+// Slack specific config interface
+export interface SlackConfig {
+  botToken: string; // Should be encrypted
+  appToken?: string; // Should be encrypted
+  signingSecret?: string; // Should be encrypted
+  teamId?: string;
+  teamName?: string;
+  botUserId?: string;
+  connectedAt?: Date;
+}
+
 export interface IWebhook extends Document {
   url: string;
   events: string[];
@@ -47,12 +58,13 @@ export type ChannelConfig =
   | WhatsAppAutomatedConfig
   | EmailConfig
   | SmsConfig
-  | TelegramConfig;
+  | TelegramConfig
+  | SlackConfig;
 
 export interface IChannel extends Document {
   channelId: string;
   ownerApiKeyId: mongoose.Types.ObjectId;
-  type: 'whatsapp_automated' | 'email' | 'sms' | 'telegram';
+  type: 'whatsapp_automated' | 'email' | 'sms' | 'telegram' | 'slack';
   name: string;
   config: ChannelConfig;
   status: string;
@@ -80,7 +92,7 @@ const ChannelSchema = new Schema(
     type: {
       type: String,
       required: true,
-      enum: ['whatsapp_automated', 'email', 'sms', 'telegram'],
+      enum: ['whatsapp_automated', 'email', 'sms', 'telegram', 'slack'],
       index: true,
     },
     name: {

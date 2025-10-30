@@ -1,6 +1,6 @@
 import { Server as SocketIOServer } from 'socket.io';
 import { Server as HTTPServer } from 'http';
-import { whatsAppService } from './WhatsAppService';
+import { whatsAppService } from '../WhatsAppService';
 
 export class SocketService {
   private io: SocketIOServer;

@@ -12,9 +12,11 @@ import i18n from 'i18n';
 import initMongo from './config/mongo';
 import path from 'path';
 import { createServer } from 'http';
-import { SocketService } from './services/SocketService';
+import { SocketService } from './services/api/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
-import { fileCleanupService } from './services/FileCleanupService';
+import { slackService } from './services/SlackService';
+import { telegramService } from './services/TelegramService';
+import { fileCleanupService } from './services/api/FileCleanupService';
 
 console.log('Env variables:', process.env);
 console.log('Env variables:', process.env.DOMAIN);
@@ -145,6 +147,8 @@ const startServer = async () => {
     httpServer.listen(port, () => {
       console.log(`🚀 Server running on port ${port}`);
       console.log(`📱 WhatsApp service ready`);
+      console.log(`💬 Slack service ready`);
+      console.log(`📲 Telegram service ready`);
       console.log(
         `🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`,
       );
@@ -156,6 +160,20 @@ const startServer = async () => {
       await whatsAppService.restoreActiveChannels();
     }
     console.log('✅ WhatsApp channels restoration completed');
+
+    // Restore active Slack channels
+    console.log('🔄 Restoring active Slack channels...');
+    if (process.env.NODE_ENV === 'production') {
+      await slackService.restoreActiveChannels();
+    }
+    console.log('✅ Slack channels restoration completed');
+
+    // Restore active Telegram channels
+    console.log('🔄 Restoring active Telegram channels...');
+    if (process.env.NODE_ENV === 'production') {
+      await telegramService.restoreActiveChannels();
+    }
+    console.log('✅ Telegram channels restoration completed');
 
     // Start file cleanup service
     console.log('🔄 Starting file cleanup service...');

@@ -11,6 +11,7 @@ import makeWASocket, {
   WAMessage,
   GroupMetadata,
   makeCacheableSignalKeyStore,
+  fetchLatestWaWebVersion,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -26,7 +27,7 @@ import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
-import { removeSuffixFromJid } from '../helpers/utils';
+import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
@@ -293,9 +294,16 @@ export class WhatsAppService extends EventEmitter {
       // Create auth state
       const auth = await this.createMongoAuthState(channelId);
 
+      // Fetch the latest WhatsApp Web version
+      const { version, isLatest } = await fetchLatestWaWebVersion({});
+      console.log(
+        `📱 Using WhatsApp Web version: ${version.join('.')} (isLatest: ${isLatest})`,
+      );
+
       // Create socket with Chrome Windows simulation for anti-ban
       // This simulates a real Chrome browser on Windows to reduce ban risk
       const sock = makeWASocket({
+        version, // Use the fetched version
         auth,
         browser: Browsers.windows('WhatsApp Web'),
         printQRInTerminal: false,
@@ -525,30 +533,50 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Resolves LID to actual phone number JID using Baileys 7 LID mapping
    * Baileys 7 LID handling: messages can come from @lid addresses
+   * Returns both the resolved JID and whether it was successfully mapped
    */
   private async resolveJidFromMessage(
     channelId: string,
     message: WAMessage,
-  ): Promise<string> {
+  ): Promise<{ jid: string; isUnresolvedLid: boolean }> {
     let jid = message.key.remoteJid;
+    const originalJid = jid;
+    let isUnresolvedLid = false;
 
     // Check if remoteJid is a LID (@lid)
     if (jid && /@lid/.test(jid)) {
       console.log(`🔍 LID detected in remoteJid: ${jid}`);
+      console.log(
+        `📋 Message key details:`,
+        JSON.stringify(
+          {
+            remoteJid: message.key.remoteJid,
+            remoteJidAlt: message.key.remoteJidAlt,
+            participant: message.key.participant,
+            participantAlt: message.key.participantAlt,
+            fromMe: message.key.fromMe,
+            pushName: message.pushName,
+          },
+          null,
+          2,
+        ),
+      );
 
       // For DMs: use senderPn (remoteJidAlt in message key)
       if (message.key.remoteJidAlt) {
         jid = message.key.remoteJidAlt;
         console.log(
-          `✅ Resolved LID to actual number using remoteJidAlt: ${jid}`,
+          `✅ Resolved LID to actual number using remoteJidAlt: ${originalJid} → ${jid}`,
         );
+        console.log(`   Resolution method: remoteJidAlt field`);
       }
       // For Groups: use participantAlt if available
       else if (message.key.participantAlt) {
         jid = message.key.participantAlt;
         console.log(
-          `✅ Resolved LID to actual number using participantAlt: ${jid}`,
+          `✅ Resolved LID to actual number using participantAlt: ${originalJid} → ${jid}`,
         );
+        console.log(`   Resolution method: participantAlt field`);
       }
       // Fallback: check if participant has the actual number
       else if (
@@ -556,35 +584,100 @@ export class WhatsAppService extends EventEmitter {
         !/@lid/.test(message.key.participant)
       ) {
         jid = message.key.participant;
-        console.log(`✅ Using participant as actual number: ${jid}`);
+        console.log(
+          `✅ Using participant as actual number: ${originalJid} → ${jid}`,
+        );
+        console.log(`   Resolution method: participant field`);
       }
       // Last resort: use Baileys' LID mapping store
       else {
         const sock = this.connections.get(channelId);
+        console.log(
+          `🔧 Attempting LID mapping store resolution for: ${originalJid}`,
+        );
+        console.log(
+          `   Socket available: ${!!sock}`,
+        );
+        console.log(
+          `   signalRepository available: ${!!sock?.signalRepository}`,
+        );
+        console.log(
+          `   lidMapping available: ${!!sock?.signalRepository?.lidMapping}`,
+        );
+
         if (sock && sock.signalRepository?.lidMapping) {
           try {
-            const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
+            console.log(
+              `🔍 Calling lidMapping.getPNForLID('${originalJid}')...`,
+            );
+            const pn = await sock.signalRepository.lidMapping.getPNForLID(
+              originalJid,
+            );
+            console.log(
+              `   lidMapping.getPNForLID result: ${pn ? pn : 'null'}`,
+            );
+
             if (pn) {
               jid = pn;
               console.log(
-                `✅ Resolved LID to PN using lidMapping.getPNForLID: ${jid}`,
+                `✅ Resolved LID to PN using lidMapping.getPNForLID: ${originalJid} → ${jid}`,
               );
+              console.log(`   Resolution method: Baileys LID mapping store`);
             } else {
-              console.warn(`⚠️ Could not resolve LID using lidMapping: ${jid}`);
+              console.warn(
+                `⚠️ LID mapping returned null for: ${originalJid}`,
+              );
+              console.warn(
+                `   Possible reasons:`,
+              );
+              console.warn(
+                `   - LID mapping not yet synced from WhatsApp server`,
+              );
+              console.warn(
+                `   - User has privacy settings that prevent mapping`,
+              );
+              console.warn(
+                `   - This is a new contact not in the mapping database`,
+              );
+              isUnresolvedLid = true;
             }
           } catch (error) {
             console.error(
-              `❌ Error using lidMapping.getPNForLID for ${jid}:`,
-              error,
+              `❌ Error using lidMapping.getPNForLID for ${originalJid}:`,
             );
+            console.error(`   Error details:`, error);
+            console.warn(
+              `   Falling back to extracting phone number from LID`,
+            );
+            isUnresolvedLid = true;
           }
         } else {
-          console.warn(`⚠️ Could not resolve LID to actual number for: ${jid}`);
+          console.warn(
+            `⚠️ signalRepository.lidMapping not available for channel ${channelId}`,
+          );
+          console.warn(
+            `   Cannot use Baileys LID mapping - marking as unresolved`,
+          );
+          isUnresolvedLid = true;
         }
+      }
+
+      // Final check: if we still have a LID, mark as unresolved
+      if (/@lid/.test(jid)) {
+        console.warn(
+          `⚠️ LID resolution failed. JID still contains @lid suffix: ${jid}`,
+        );
+        console.warn(
+          `   Will extract phone number: ${jid.replace('@lid', '')}`,
+        );
+        console.warn(
+          `   Webhook will be marked with isLid: true`,
+        );
+        isUnresolvedLid = true;
       }
     }
 
-    return jid || '';
+    return { jid: jid || '', isUnresolvedLid };
   }
 
   /**
@@ -617,7 +710,11 @@ export class WhatsAppService extends EventEmitter {
     for (const message of messages) {
       // Resolve LID to actual phone number before processing (Baileys 7 requirement)
       const originalRemoteJid = message.key.remoteJid;
-      const resolvedJid = await this.resolveJidFromMessage(channelId, message);
+      const resolutionResult = await this.resolveJidFromMessage(
+        channelId,
+        message,
+      );
+      const { jid: resolvedJid, isUnresolvedLid } = resolutionResult;
 
       // Update the remoteJid with the resolved actual phone number
       if (resolvedJid !== originalRemoteJid) {
@@ -627,7 +724,18 @@ export class WhatsAppService extends EventEmitter {
         message.key.remoteJid = resolvedJid;
       }
 
-      await WhatsAppEvents.create({ channelId, payload: message });
+      // Store unresolved LID flag in message metadata for webhook formatting
+      (message as any)._isUnresolvedLid = isUnresolvedLid;
+
+      // Determine if original message had LID
+      const wasLid = /@lid/.test(originalRemoteJid);
+
+      await WhatsAppEvents.create({
+        channelId,
+        payload: message,
+        isLid: wasLid,
+        isUnresolvedLid: isUnresolvedLid,
+      });
 
       // Skip if message is from us
       if (message.key.fromMe) continue;
@@ -723,6 +831,10 @@ export class WhatsAppService extends EventEmitter {
     const messageId = message.key.id;
     const timestamp = message.messageTimestamp;
     const contactName = message.pushName || from;
+    const isUnresolvedLid = (message as any)._isUnresolvedLid;
+
+    // If it's an unresolved LID, keep the @lid suffix, otherwise remove all suffixes
+    const formattedFrom = isUnresolvedLid ? from : removeSuffixFromJid(from);
 
     const payload: any = {
       object: 'whatsapp_business_account',
@@ -742,14 +854,15 @@ export class WhatsAppService extends EventEmitter {
                     profile: {
                       name: contactName,
                     },
-                    wa_id: removeSuffixFromJid(from),
+                    wa_id: formattedFrom,
                   },
                 ],
                 messages: [
                   {
-                    from: removeSuffixFromJid(from),
+                    from: formattedFrom,
                     id: messageId,
                     timestamp,
+                    ...(isUnresolvedLid ? { isLid: true } : {}),
                   },
                 ],
               },
@@ -1753,18 +1866,24 @@ export class WhatsAppService extends EventEmitter {
     }
 
     let to = payload.to;
-    const originalNumber = to; // Store original for validation
-
-    // check if to has @s.whatsapp.net
-    if (!to.includes('@s.whatsapp.net')) {
-      to = to + '@s.whatsapp.net';
-    }
     if (!to) {
       throw new Error('Recipient "to" is required');
     }
 
-    // Validate phone number exists on WhatsApp (with caching)
-    await this.validatePhoneNumberWithCache(channelId, originalNumber);
+    const originalNumber = to; // Store original for validation
+
+    // Format JID properly (handles @lid, @s.whatsapp.net, @g.us, etc.)
+    to = formatJid(to);
+    
+    const isLid = to.includes('@lid');
+    console.log(`📨 Sending message to: ${to}${isLid ? ' (LID)' : ''}`);
+
+    // Validate phone number exists on WhatsApp (skip for LIDs)
+    if (!isLid) {
+      await this.validatePhoneNumberWithCache(channelId, originalNumber);
+    } else {
+      console.log(`⏭️ Skipping phone validation for LID: ${to}`);
+    }
 
     let messageContent: any;
 
@@ -2005,6 +2124,166 @@ export class WhatsAppService extends EventEmitter {
         error,
       );
       return undefined;
+    }
+  }
+
+  /**
+   * Get all known LID to phone number mappings for a channel
+   */
+  async getAllLids(
+    channelId: string,
+    limit: number = 100,
+    offset: number = 0,
+  ): Promise<Array<{ lid: string; pn: string }>> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      console.warn(
+        `⚠️ LID mapping not available for channel ${channelId}`,
+      );
+      return [];
+    }
+
+    try {
+      // Access the internal store if available
+      // Note: This is implementation-specific and may need adjustment based on Baileys version
+      const store = sock.signalRepository.lidMapping as any;
+      
+      // Try to get all mappings if the store exposes them
+      if (store.store && typeof store.store.toJSON === 'function') {
+        const allMappings = store.store.toJSON();
+        const mappings = Object.entries(allMappings).map(([lid, pn]) => ({
+          lid,
+          pn: pn as string,
+        }));
+        
+        // Apply pagination
+        return mappings.slice(offset, offset + limit);
+      }
+
+      console.warn(
+        `⚠️ LID mapping store structure not accessible for channel ${channelId}`,
+      );
+      return [];
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID mappings for ${channelId}:`,
+        error,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Get count of known LID mappings for a channel
+   */
+  async getLidsCount(channelId: string): Promise<number> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      return 0;
+    }
+
+    try {
+      const store = sock.signalRepository.lidMapping as any;
+      
+      if (store.store && typeof store.store.toJSON === 'function') {
+        const allMappings = store.store.toJSON();
+        return Object.keys(allMappings).length;
+      }
+
+      return 0;
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID count for ${channelId}:`,
+        error,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Get phone number for a specific LID
+   */
+  async getPhoneNumberByLid(
+    channelId: string,
+    lid: string,
+  ): Promise<{ lid: string; pn: string } | null> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      throw new Error(`LID mapping not available for channel ${channelId}`);
+    }
+
+    // Ensure LID has proper suffix
+    const formattedLid = lid.includes('@') ? lid : `${lid}@lid`;
+
+    try {
+      const pn = await sock.signalRepository.lidMapping.getPNForLID(
+        formattedLid,
+      );
+      
+      if (pn) {
+        return { lid: formattedLid, pn };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(
+        `❌ Error getting phone number for LID ${formattedLid}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get LID for a specific phone number
+   */
+  async getLidByPhoneNumber(
+    channelId: string,
+    phoneNumber: string,
+  ): Promise<{ lid: string; pn: string } | null> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    if (!sock.signalRepository?.lidMapping) {
+      throw new Error(`LID mapping not available for channel ${channelId}`);
+    }
+
+    // Ensure phone number has proper suffix
+    let formattedPn = phoneNumber;
+    if (!phoneNumber.includes('@')) {
+      formattedPn = `${phoneNumber}@s.whatsapp.net`;
+    }
+
+    try {
+      const lid = await sock.signalRepository.lidMapping.getLIDForPN(
+        formattedPn,
+      );
+      
+      if (lid) {
+        return { lid, pn: formattedPn };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(
+        `❌ Error getting LID for phone number ${formattedPn}:`,
+        error,
+      );
+      throw error;
     }
   }
 }

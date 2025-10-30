@@ -636,8 +636,25 @@ class WhatsAppController {
    */
   public checkContact = async (req: Request, res: Response) => {
     try {
-      const { channelId, jid } = req.params;
-      const result = await whatsAppService.checkIdExists(channelId, jid);
+      const { channelId } = req.params;
+      let { jid } = req.params;
+      jid = formatJid(jid);
+      
+      let finalJid = jid;
+      // If this is a LID, try to resolve it to a phone number
+      if (jid.includes('@lid')) {
+        try {
+          const lidResult = await whatsAppService.getPhoneNumberByLid(channelId, jid);
+          if (lidResult && lidResult.pn) {
+            finalJid = lidResult.pn;
+            console.log(`✅ LID resolved for check: ${jid} -> ${finalJid}`);
+          }
+        } catch (lidError) {
+          console.warn(`⚠️ Error resolving LID ${jid}:`, lidError);
+        }
+      }
+      
+      const result = await whatsAppService.checkIdExists(channelId, finalJid);
       res.status(200).json({
         ok: true,
         payload: result,
@@ -652,8 +669,25 @@ class WhatsAppController {
    */
   public getContactStatus = async (req: Request, res: Response) => {
     try {
-      const { channelId, jid } = req.params;
-      const result = await whatsAppService.fetchContactStatus(channelId, jid);
+      const { channelId } = req.params;
+      let { jid } = req.params;
+      jid = formatJid(jid);
+      
+      let finalJid = jid;
+      // If this is a LID, try to resolve it to a phone number
+      if (jid.includes('@lid')) {
+        try {
+          const lidResult = await whatsAppService.getPhoneNumberByLid(channelId, jid);
+          if (lidResult && lidResult.pn) {
+            finalJid = lidResult.pn;
+            console.log(`✅ LID resolved for status: ${jid} -> ${finalJid}`);
+          }
+        } catch (lidError) {
+          console.warn(`⚠️ Error resolving LID ${jid}:`, lidError);
+        }
+      }
+      
+      const result = await whatsAppService.fetchContactStatus(channelId, finalJid);
       if (result) {
         res.status(200).json({
           ok: true,
@@ -682,10 +716,31 @@ class WhatsAppController {
       console.log('Formatted jid:', jid);
       const { type } = req.query; // 'preview' or 'image'
 
+      let finalJid = jid;
+      let isLid = false;
+
+      // If this is a LID, try to resolve it to a phone number
+      if (jid.includes('@lid')) {
+        isLid = true;
+        console.log('Detected LID, attempting to resolve to phone number...');
+        try {
+          const lidResult = await whatsAppService.getPhoneNumberByLid(channelId, jid);
+          if (lidResult && lidResult.pn) {
+            finalJid = lidResult.pn;
+            console.log(`✅ LID resolved: ${jid} -> ${finalJid}`);
+          } else {
+            console.log(`⚠️ LID not found in mapping, will try with LID directly: ${jid}`);
+          }
+        } catch (lidError) {
+          console.warn(`⚠️ Error resolving LID ${jid}:`, lidError);
+          console.log('Will attempt to fetch profile picture using LID directly...');
+        }
+      }
+
       // Download and save the profile picture locally
       const localUrl = await whatsAppService.downloadAndSaveProfilePicture(
         channelId,
-        jid,
+        finalJid,
         type === 'image' ? 'image' : 'preview',
       );
 
@@ -695,7 +750,9 @@ class WhatsAppController {
           payload: {
             url: localUrl,
             type: type === 'image' ? 'image' : 'preview',
-            jid: jid,
+            jid: finalJid,
+            originalJid: isLid ? jid : undefined,
+            wasLid: isLid,
           },
         });
       } else {
@@ -983,6 +1040,97 @@ class WhatsAppController {
       });
     } catch (error) {
       utils.handleError(res, error);
+    }
+  };
+
+  /**
+   * Get all known LID mappings for a channel
+   */
+  public getAllLids = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const lids = await whatsAppService.getAllLids(channelId, limit, offset);
+
+      res.status(200).json(lids);
+    } catch (error) {
+      console.error('Error getting LIDs:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get count of known LID mappings for a channel
+   */
+  public getLidsCount = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+
+      const count = await whatsAppService.getLidsCount(channelId);
+
+      res.status(200).json({ count });
+    } catch (error) {
+      console.error('Error getting LIDs count:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get phone number by LID
+   */
+  public getPhoneNumberByLid = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId, lid } = req.params;
+
+      const result = await whatsAppService.getPhoneNumberByLid(channelId, lid);
+
+      if (!result) {
+        res.status(404).json({
+          error: 'LID_NOT_FOUND',
+          message: `No phone number found for LID: ${lid}`,
+        });
+        return;
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error getting phone number by LID:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Get LID by phone number
+   */
+  public getLidByPhoneNumber = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId, phoneNumber } = req.params;
+
+      const result = await whatsAppService.getLidByPhoneNumber(
+        channelId,
+        phoneNumber,
+      );
+
+      if (!result) {
+        res.status(404).json({
+          error: 'PHONE_NUMBER_NOT_FOUND',
+          message: `No LID found for phone number: ${phoneNumber}`,
+        });
+        return;
+      }
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error('Error getting LID by phone number:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
     }
   };
 }
