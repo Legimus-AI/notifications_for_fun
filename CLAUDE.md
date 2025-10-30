@@ -95,22 +95,59 @@ The system provides a unified REST API for sending notifications across provider
 - `POST /api/notifications/send` - Send single notification
 - `POST /api/notifications/send-multi` - Send to multiple providers
 
-See `NOTIFICATION_ARCHITECTURE.md` for usage examples and how to add new providers.
+**Documentation:**
+- `NOTIFICATION_API_GUIDE.md` - Complete API reference with curl examples for all providers
+- `NOTIFICATION_ARCHITECTURE.md` - System architecture and how to add new providers
 
 ## Project Structure
 
-### Controllers (`src/controllers/`)
-Controllers extend `BaseController` and use `BaseValidation` for input validation:
-- `auth.controller.ts` - User authentication endpoints
-- `channels.controller.ts` - Channel CRUD operations
-- `WhatsAppEvents.controller.ts` - WhatsApp-specific operations
-- `webhooks.controller.ts` - Webhook management
-- `notificationLogs.controller.ts` - Notification history
+### Base Classes Pattern
 
-### Routes (`src/routes/api/`)
-All routes extend `BaseRouter` class for consistent structure:
-- Routes loaded dynamically via `loadRoutes()` in `src/routes/api/index.ts`
-- Path aliases configured with `@/*` for `./src/*` (see tsconfig.json)
+The codebase uses inheritance-based patterns for consistency:
+
+**BaseController** (`src/controllers/BaseController.ts`):
+- Provides CRUD operations: `listAll`, `list`, `listOne`, `create`, `update`, `delete`
+- Automatic duplicate checking via `uniqueFields` constructor parameter
+- All controllers extend this base class for consistent API behavior
+- Uses helpers from `src/helpers/db.ts` for database operations
+
+**BaseValidation** (`src/controllers/BaseValidation.ts`):
+- Uses `express-validator` for request validation
+- Default validations for CRUD operations
+- Can be customized via `setCreate()`, `setUpdate()`, `setListOne()`, `setDelete()` methods
+- Each controller has a `validation` property extending this class
+
+**BaseRouter** (`src/routes/api/BaseRouter.ts`):
+- Auto-generates RESTful routes for controllers
+- Default auth: JWT + role check for SUPERADMIN/ADMIN
+- Standard routes: `GET /all`, `GET /`, `POST /`, `GET /:id`, `PUT /:id`, `DELETE /:id`
+- Auth middlewares customizable via `setAuthMiddlewares()`
+
+### Dynamic Route Loading
+
+Routes are auto-loaded from `src/routes/api/` directory:
+- Each file exports a router and optional `basePath`
+- `loadRoutes()` scans directory and mounts routes dynamically
+- Convention: filename becomes route path (e.g., `users.ts` → `/api/users`)
+- 404 handler automatically added for unknown routes
+
+### Helpers (`src/helpers/`)
+
+Utility modules for common operations:
+
+**db.ts** - Database operations:
+- `getItems()`, `getAllItems()`, `getItem()` - Retrieve with pagination support
+- `createItem()`, `updateItem()`, `deleteItem()` - CRUD operations
+- `checkQueryString()` - Query parameter validation and sanitization
+
+**utils.ts** - General utilities:
+- `handleError()` - Centralized error handling with status codes
+- `isIDGood()` - Mongoose ObjectId validation
+- `itemAlreadyExists()` - Duplicate checking helper
+- `validationResultMiddleware()` - express-validator result processing
+- Request helpers: `getIP()`, `getBrowserInfo()`, `getCountry()`
+
+**auth.ts** - Authentication utilities used by controllers
 
 ### Models (`src/models/`)
 Mongoose models with TypeScript interfaces:
@@ -123,12 +160,14 @@ Mongoose models with TypeScript interfaces:
 
 ### Services (`src/services/`)
 Business logic and external integrations:
-- `WhatsAppService.ts` - WhatsApp connection and message handling
+- `WhatsAppService.ts` - WhatsApp connection and message handling (EventEmitter-based)
 - `SlackService.ts` - Slack API integration
-- `SocketService.ts` - Socket.io real-time events
-- `FileCleanupService.ts` - Scheduled file cleanup with node-cron
+- `SocketService.ts` - Socket.io real-time events (authenticates clients with API keys)
+- `FileCleanupService.ts` - Scheduled file cleanup (cron: every 12 hours, deletes files >12 hours old)
 - `BaseNotificationService.ts` - Unified notification interface
 - `NotificationServiceFactory.ts` - Service factory pattern
+
+See `src/docs/FILE_CLEANUP.md` for file cleanup service API and configuration.
 
 ## Key Technologies
 
@@ -197,21 +236,82 @@ Production deployment uses Docker Compose:
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
-## Adding New Notification Providers
+## Common Development Patterns
 
-1. Create adapter in `src/services/adapters/[Provider]NotificationAdapter.ts`
-2. Implement `INotificationProvider` interface
-3. Add provider service in `src/services/[Provider]Service.ts`
-4. Register in `NotificationServiceFactory.ts` switch statement
-5. Add provider type to Channel model enum
+### Adding a New CRUD Controller
+
+```typescript
+// 1. Create controller extending BaseController
+import BaseController from './BaseController';
+import MyModel from '../models/MyModel';
+
+class MyController extends BaseController {
+  constructor() {
+    super(MyModel, ['uniqueField1', 'uniqueField2']); // uniqueFields for duplicate checking
+  }
+
+  // Add custom methods if needed
+  myCustomMethod = async (req, res) => {
+    // Custom logic
+  }
+}
+
+// 2. Create validation extending BaseValidation (optional customization)
+import BaseValidation from './BaseValidation';
+import { check } from 'express-validator';
+
+class MyValidation extends BaseValidation {
+  constructor() {
+    super();
+    this.setCreate([
+      check('customField').exists().withMessage('Required'),
+      // ... other validations
+    ]);
+  }
+}
+
+// 3. Create route using BaseRouter
+import BaseRouter from './BaseRouter';
+import controller from '../../controllers/my.controller';
+
+const router = new BaseRouter(controller);
+router.setupRoutes();
+
+export default router.getRouter();
+```
+
+### Adding a New Notification Provider
+
+1. Create adapter in `src/services/adapters/[Provider]NotificationAdapter.ts` implementing `INotificationProvider`
+2. Create provider service in `src/services/[Provider]Service.ts` with provider-specific logic
+3. Register in `NotificationServiceFactory.ts` switch statement
+4. Add provider type to Channel model enum if needed
 
 See `NOTIFICATION_ARCHITECTURE.md` for detailed examples.
 
 ## Important Notes
 
-- WhatsApp auth state persists in MongoDB for production reliability
+### WhatsApp Specifics
+- Auth state persists in MongoDB for production reliability (separate collections for creds and keys)
 - LID (Linked Identity) support for WhatsApp contacts - maintain `@lid` suffix for unresolved IDs
-- File cleanup service runs on cron schedule (see `src/services/FileCleanupService.ts`)
+- Channel restoration happens only in production mode (see `src/index.ts` startup sequence)
+- WhatsAppService extends EventEmitter for event-driven architecture
+- Uses latest WhatsApp Web version to reduce ban risk
+
+### Architecture Conventions
+- Controllers automatically inject `userId` from JWT token into `req.body` (see BaseController create/update)
+- Default role authorization: SUPERADMIN and ADMIN (customizable per route)
+- All routes use `trim-request` middleware to sanitize inputs
+- Error handling centralized in `src/helpers/utils.ts` with environment-aware logging
+
+### Performance & Maintenance
+- File cleanup service: runs every 12 hours, removes files >12 hours old from `storage/`
 - Socket.io CORS configured via `FRONTEND_DOMAIN` environment variable
+- Optional Redis caching via `USE_REDIS` environment variable
+- Coverage reporting merges Jest (unit) and Mocha (e2e) results
+
+### Development Requirements
 - TypeScript compilation required before running (`npm run build` or `npm run tsc`)
-- Path aliases require `tsconfig-paths/register` for ts-node execution
+- Path aliases (`@/*`) require `tsconfig-paths/register` for ts-node execution
+- Database must be seeded before e2e tests (`npm run fresh` or `npm run test:e2e`)
+- `postinstall` hook automatically runs TypeScript compilation after `npm install`

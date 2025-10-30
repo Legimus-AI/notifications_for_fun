@@ -1,5 +1,6 @@
 import { SlackNotificationAdapter } from '../adapters/SlackNotificationAdapter';
 import { WhatsAppNotificationAdapter } from '../adapters/WhatsAppNotificationAdapter';
+import { TelegramNotificationAdapter } from '../adapters/TelegramNotificationAdapter';
 import { INotificationProvider } from '../interfaces/INotificationProvider';
 
 /**
@@ -18,6 +19,8 @@ export class NotificationServiceFactory {
         return new SlackNotificationAdapter();
       case 'whatsapp':
         return new WhatsAppNotificationAdapter();
+      case 'telegram':
+        return new TelegramNotificationAdapter();
       // Easy to add more providers here
       // case 'email':
       //   return new EmailNotificationAdapter();
