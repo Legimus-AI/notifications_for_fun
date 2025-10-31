@@ -37,6 +37,14 @@ interface TelegramConfig {
   botUsername?: string;
 }
 
+// Telegram Phones specific config interface for call me bot functionality
+interface TelegramPhonesConfig {
+  botToken: string; // Should be encrypted
+  botUsername?: string;
+  callMeBotToken?: string; // Token for CallMeBot API integration
+  defaultPhoneCountry?: string; // Default country code for phone numbers
+}
+
 // Slack specific config interface
 export interface SlackConfig {
   botToken: string; // Should be encrypted
@@ -59,12 +67,13 @@ export type ChannelConfig =
   | EmailConfig
   | SmsConfig
   | TelegramConfig
+  | TelegramPhonesConfig
   | SlackConfig;
 
 export interface IChannel extends Document {
   channelId: string;
   ownerApiKeyId: mongoose.Types.ObjectId;
-  type: 'whatsapp_automated' | 'email' | 'sms' | 'telegram' | 'slack';
+  type: 'whatsapp_automated' | 'email' | 'sms' | 'telegram' | 'telegram_phones' | 'slack';
   name: string;
   config: ChannelConfig;
   status: string;
@@ -92,7 +101,7 @@ const ChannelSchema = new Schema(
     type: {
       type: String,
       required: true,
-      enum: ['whatsapp_automated', 'email', 'sms', 'telegram', 'slack'],
+      enum: ['whatsapp_automated', 'email', 'sms', 'telegram', 'telegram_phones', 'slack'],
       index: true,
     },
     name: {
