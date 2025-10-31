@@ -19,6 +19,9 @@ export interface TelegramPhonesCallRequest {
   phone: string; // Phone number to call
   message?: string; // Optional message to send with the call
   language?: string; // Language for the call (e.g., 'en-US', 'es-ES')
+  repeat?: number; // Number of times to repeat message (1-3, default: 2)
+  carbonCopy?: 'yes' | 'no' | 'missed' | 'only'; // Text message copy behavior
+  timeout?: number; // Timeout in seconds (dedicated bots only)
 }
 
 export interface TelegramPhonesCallResponse {

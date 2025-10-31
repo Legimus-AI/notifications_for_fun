@@ -96,15 +96,25 @@ export class TelegramPhonesService {
         formattedUser = `${defaultCountry}${formattedUser.replace(/[^0-9]/g, '')}`;
       }
 
-      // CallMeBot uses user parameter (either @username or phone number with +)
+      // CallMeBot API format: user=[@username or phone]&text=[message]
+      // Only include optional parameters if explicitly provided
       const params = new URLSearchParams({
-        user: formattedUser, // Can be @username or phone number with +
+        user: formattedUser,
         text: callRequest.message || 'Call from notification system',
       });
 
-      // Add language parameter if provided
+      // Add optional parameters only if provided
       if (callRequest.language) {
         params.append('lang', callRequest.language);
+      }
+      if (callRequest.repeat) {
+        params.append('rpt', String(callRequest.repeat));
+      }
+      if (callRequest.carbonCopy) {
+        params.append('cc', callRequest.carbonCopy);
+      }
+      if (callRequest.timeout) {
+        params.append('timeout', String(callRequest.timeout));
       }
 
       const response = await axios.get(
@@ -139,11 +149,17 @@ export class TelegramPhonesService {
           status: 'queued',
           message: 'Line is busy, call queued for retry',
         };
-      } else if (responseText.includes('User') && responseText.includes('is in the whitelist')) {
+      } else if (responseText.includes('User') && responseText.includes('is in the whitelist') && !responseText.includes('Something went wrong')) {
         return {
           success: true,
           status: 'initiated',
           message: 'Call initiated successfully',
+        };
+      } else if (responseText.includes('Two calls to the same user') && responseText.includes('within 65 seconds')) {
+        return {
+          success: false,
+          status: 'rate_limited',
+          message: 'Rate limit: Please wait 65 seconds between calls to the same user',
         };
       } else {
         return {
