@@ -16,6 +16,7 @@ import { SocketService } from './services/api/SocketService';
 import { whatsAppService } from './services/WhatsAppService';
 import { slackService } from './services/SlackService';
 import { telegramService } from './services/TelegramService';
+import { telegramPhonesService } from './services/TelegramPhonesService';
 import { fileCleanupService } from './services/api/FileCleanupService';
 
 console.log('Env variables:', process.env);
@@ -149,6 +150,7 @@ const startServer = async () => {
       console.log(`📱 WhatsApp service ready`);
       console.log(`💬 Slack service ready`);
       console.log(`📲 Telegram service ready`);
+      console.log(`📞 Telegram Phones service ready`);
       console.log(
         `🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`,
       );
@@ -174,6 +176,13 @@ const startServer = async () => {
       await telegramService.restoreActiveChannels();
     }
     console.log('✅ Telegram channels restoration completed');
+
+    // Restore active Telegram Phones channels
+    console.log('🔄 Restoring active Telegram Phones channels...');
+    if (process.env.NODE_ENV === 'production') {
+      await telegramPhonesService.restoreActiveChannels();
+    }
+    console.log('✅ Telegram Phones channels restoration completed');
 
     // Start file cleanup service
     console.log('🔄 Starting file cleanup service...');
