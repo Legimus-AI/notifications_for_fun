@@ -10,9 +10,8 @@
     "test:e2e": "cross-env NODE_ENV=test npm run fresh && npm run mocha",
     "dev": "cross-env NODE_ENV=development ts-node-dev --respawn --pretty --transpile-only -r tsconfig-paths/register ./src/index.ts",
     "tsc": "npx tsc",
-    "build": "tsc",
-    "postinstall": "npm run tsc",
     "build": "npm run tsc",
+    "postinstall": "npm run tsc",
     "fresh": "npm run clean && npm run seed",
     "clean": "node clean.js",
     "prettier": "prettier --write --config .prettierrc.json \"**/*.js\"",
@@ -85,6 +84,7 @@
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/dotenv-safe": "^9.1.0",
     "@types/express": "^4.17.19",
     "@types/jest": "^29.5.5",
     "@types/mongoose": "^5.11.96",

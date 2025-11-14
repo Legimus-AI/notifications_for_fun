@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import dotenv from 'dotenv-safe';
 dotenv.config();
 import express from 'express';
 import bodyParser from 'body-parser';
