@@ -9,11 +9,16 @@ export class SocketService {
   constructor(httpServer: HTTPServer) {
     this.io = new SocketIOServer(httpServer, {
       cors: {
-        origin: process.env.FRONTEND_DOMAIN || 'http://localhost:3030',
-        methods: ['GET', 'POST'],
+        origin: process.env.NODE_ENV === 'production' 
+          ? (process.env.FRONTEND_DOMAIN || 'http://localhost:3030')
+          : '*', // Allow all origins in development
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
         credentials: true,
+        allowedHeaders: ['Content-Type', 'Authorization'],
       },
       path: '/socket.io/',
+      transports: ['websocket', 'polling'],
+      allowEIO3: true,
     });
 
     this.setupSocketEvents();
