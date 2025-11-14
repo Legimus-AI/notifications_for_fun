@@ -4,6 +4,7 @@ exports.NotificationServiceFactory = void 0;
 const SlackNotificationAdapter_1 = require("../adapters/SlackNotificationAdapter");
 const WhatsAppNotificationAdapter_1 = require("../adapters/WhatsAppNotificationAdapter");
 const TelegramNotificationAdapter_1 = require("../adapters/TelegramNotificationAdapter");
+const TelegramPhonesNotificationAdapter_1 = require("../adapters/TelegramPhonesNotificationAdapter");
 /**
  * Factory to create notification adapters
  * Simplified - returns adapters directly without extra wrapper
@@ -22,6 +23,8 @@ class NotificationServiceFactory {
                 return new WhatsAppNotificationAdapter_1.WhatsAppNotificationAdapter();
             case 'telegram':
                 return new TelegramNotificationAdapter_1.TelegramNotificationAdapter();
+            case 'telegram_phones':
+                return new TelegramPhonesNotificationAdapter_1.TelegramPhonesNotificationAdapter();
             // Easy to add more providers here
             // case 'email':
             //   return new EmailNotificationAdapter();

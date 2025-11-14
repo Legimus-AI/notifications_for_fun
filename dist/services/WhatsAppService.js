@@ -15,13 +15,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -58,15 +68,15 @@ class WhatsAppService extends events_1.EventEmitter {
         // Initialize group metadata cache
         // Cache for 1 hour (3600 seconds) with automatic cleanup every 5 minutes
         this.groupCache = new node_cache_1.default({
-            stdTTL: 3600,
-            checkperiod: 300,
+            stdTTL: 3600, // 1 hour
+            checkperiod: 300, // Check for expired keys every 5 minutes
             useClones: false, // Don't clone objects for better performance
         });
         // Initialize phone number validation cache
         // Cache for 24 hours (86400 seconds) with automatic cleanup every 1 hour
         this.phoneValidationCache = new node_cache_1.default({
-            stdTTL: 86400,
-            checkperiod: 3600,
+            stdTTL: 86400, // 24 hours
+            checkperiod: 3600, // Check for expired keys every 1 hour
             useClones: false, // Don't clone objects for better performance
         });
     }
@@ -258,14 +268,14 @@ class WhatsAppService extends events_1.EventEmitter {
                 // Create socket with Chrome Windows simulation for anti-ban
                 // This simulates a real Chrome browser on Windows to reduce ban risk
                 const sock = (0, baileys_1.default)({
-                    version,
+                    version, // Use the fetched version
                     auth,
                     browser: baileys_1.Browsers.windows('WhatsApp Web'),
                     printQRInTerminal: false,
-                    markOnlineOnConnect: false,
-                    syncFullHistory: false,
+                    markOnlineOnConnect: false, // Critical: prevents auto online status
+                    syncFullHistory: false, // Reduces bandwidth and suspicion
                     defaultQueryTimeoutMs: 60000,
-                    emitOwnEvents: false,
+                    emitOwnEvents: false, // Don't emit events for own messages
                     // Implement cached group metadata to prevent rate limits and bans
                     cachedGroupMetadata: (jid) => __awaiter(this, void 0, void 0, function* () {
                         const cached = this.groupCache.get(jid);
@@ -348,8 +358,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Handles connection status updates
      */
     handleConnectionUpdate(channelId, update, phoneNumber) {
-        var _a, _b, _c;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
             if (!this.connections.has(channelId) && currentStatus !== 'disconnecting') {
@@ -437,8 +447,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Returns both the resolved JID and whether it was successfully mapped
      */
     resolveJidFromMessage(channelId, message) {
-        var _a, _b;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
             let jid = message.key.remoteJid;
             const originalJid = jid;
             let isUnresolvedLid = false;
@@ -621,8 +631,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Formats a Baileys message into a WhatsApp Cloud API-like webhook payload.
      */
     formatMessageToWebhookPayload(channelId, message) {
-        var _a, _b;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 return null;
@@ -772,8 +782,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Formats a Baileys call event into a WhatsApp Cloud API-like webhook payload.
      */
     formatCallToWebhookPayload(channelId, callEvent) {
-        var _a, _b, _c;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 return null;
@@ -827,8 +837,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Formats a Baileys message status update into a WhatsApp Cloud API-like webhook payload.
      */
     formatStatusToWebhookPayload(channelId, statusUpdate) {
-        var _a, _b, _c;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 return null;
@@ -907,8 +917,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Resolves a JID (can be LID or PN) to a phone number JID
      */
     resolveJid(channelId, jid) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             if (!jid)
                 return jid;
             // Check if JID is a LID (@lid)
@@ -938,8 +948,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Handles message status updates (sent, delivered, read) with LID resolution
      */
     handleMessageStatusUpdates(channelId, updates) {
-        var _a, _b, _c, _d, _e;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d, _e;
             // Check if channel still exists or is being disconnected before processing events
             const currentStatus = this.connectionStatus.get(channelId);
             if (!this.connections.has(channelId) ||
@@ -1463,8 +1473,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * This handles both single and bulk messages, including replies with context.
      */
     sendMessageFromApi(channelId, payload) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);
@@ -1616,8 +1626,8 @@ class WhatsAppService extends events_1.EventEmitter {
     /**
      * Fetches the profile picture URL of a contact or group.
      */
-    fetchProfilePictureUrl(channelId, jid, type = 'preview') {
-        return __awaiter(this, void 0, void 0, function* () {
+    fetchProfilePictureUrl(channelId_1, jid_1) {
+        return __awaiter(this, arguments, void 0, function* (channelId, jid, type = 'preview') {
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);
@@ -1636,8 +1646,8 @@ class WhatsAppService extends events_1.EventEmitter {
     /**
      * Downloads and saves a profile picture locally, returning the local URL.
      */
-    downloadAndSaveProfilePicture(channelId, jid, type = 'preview') {
-        return __awaiter(this, void 0, void 0, function* () {
+    downloadAndSaveProfilePicture(channelId_1, jid_1) {
+        return __awaiter(this, arguments, void 0, function* (channelId, jid, type = 'preview') {
             try {
                 // First get the profile picture URL from WhatsApp
                 const profilePictureUrl = yield this.fetchProfilePictureUrl(channelId, jid, type);
@@ -1686,9 +1696,9 @@ class WhatsAppService extends events_1.EventEmitter {
     /**
      * Get all known LID to phone number mappings for a channel
      */
-    getAllLids(channelId, limit = 100, offset = 0) {
-        var _a;
-        return __awaiter(this, void 0, void 0, function* () {
+    getAllLids(channelId_1) {
+        return __awaiter(this, arguments, void 0, function* (channelId, limit = 100, offset = 0) {
+            var _a;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);
@@ -1724,8 +1734,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Get count of known LID mappings for a channel
      */
     getLidsCount(channelId) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);
@@ -1751,8 +1761,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Get phone number for a specific LID
      */
     getPhoneNumberByLid(channelId, lid) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);
@@ -1779,8 +1789,8 @@ class WhatsAppService extends events_1.EventEmitter {
      * Get LID for a specific phone number
      */
     getLidByPhoneNumber(channelId, phoneNumber) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             const sock = this.connections.get(channelId);
             if (!sock) {
                 throw new Error(`Channel ${channelId} is not connected`);

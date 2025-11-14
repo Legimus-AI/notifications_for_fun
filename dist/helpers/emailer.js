@@ -95,7 +95,7 @@ const sendRegistrationEmailMessage = (user) => __awaiter(void 0, void 0, void 0,
     prepareToSendEmail(user, subject, htmlMessage);
 });
 exports.sendRegistrationEmailMessage = sendRegistrationEmailMessage;
-const sendResetPasswordEmailMessage = (locale = 'es', user) => __awaiter(void 0, void 0, void 0, function* () {
+const sendResetPasswordEmailMessage = (...args_1) => __awaiter(void 0, [...args_1], void 0, function* (locale = 'es', user) {
     console.log(locale);
     const subject = 'Olvidaste tu contraseña...';
     const htmlMessage = 'olvidaste la contraseña';

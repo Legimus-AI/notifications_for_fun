@@ -31,6 +31,7 @@ const SocketService_1 = require("./services/api/SocketService");
 const WhatsAppService_1 = require("./services/WhatsAppService");
 const SlackService_1 = require("./services/SlackService");
 const TelegramService_1 = require("./services/TelegramService");
+const TelegramPhonesService_1 = require("./services/TelegramPhonesService");
 const FileCleanupService_1 = require("./services/api/FileCleanupService");
 console.log('Env variables:', process.env);
 console.log('Env variables:', process.env.DOMAIN);
@@ -136,6 +137,7 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
             console.log(`📱 WhatsApp service ready`);
             console.log(`💬 Slack service ready`);
             console.log(`📲 Telegram service ready`);
+            console.log(`📞 Telegram Phones service ready`);
             console.log(`🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`);
         });
         // Restore active WhatsApp channels
@@ -156,6 +158,12 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
             yield TelegramService_1.telegramService.restoreActiveChannels();
         }
         console.log('✅ Telegram channels restoration completed');
+        // Restore active Telegram Phones channels
+        console.log('🔄 Restoring active Telegram Phones channels...');
+        if (process.env.NODE_ENV === 'production') {
+            yield TelegramPhonesService_1.telegramPhonesService.restoreActiveChannels();
+        }
+        console.log('✅ Telegram Phones channels restoration completed');
         // Start file cleanup service
         console.log('🔄 Starting file cleanup service...');
         FileCleanupService_1.fileCleanupService.start();

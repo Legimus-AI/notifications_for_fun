@@ -12,7 +12,9 @@
  * @see https://whiskey.so/migrate-latest
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isLidJid = exports.isPnJid = exports.getJidType = void 0;
+exports.getJidType = getJidType;
+exports.isPnJid = isPnJid;
+exports.isLidJid = isLidJid;
 /**
  * Determines the type of a JID
  */
@@ -29,19 +31,16 @@ function getJidType(jid) {
         return 'broadcast';
     return 'unknown';
 }
-exports.getJidType = getJidType;
 /**
  * Checks if a JID is a Phone Number (not a LID)
  */
 function isPnJid(jid) {
     return getJidType(jid) === 'pn';
 }
-exports.isPnJid = isPnJid;
 /**
  * Checks if a JID is a LID
  */
 function isLidJid(jid) {
     return getJidType(jid) === 'lid';
 }
-exports.isLidJid = isLidJid;
 //# sourceMappingURL=Baileys.js.map

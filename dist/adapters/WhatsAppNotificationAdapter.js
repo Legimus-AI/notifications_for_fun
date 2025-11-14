@@ -20,11 +20,11 @@ class WhatsAppNotificationAdapter {
      * Sends a message through WhatsApp
      */
     send(channelId, recipient, message, options) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             // Adapt the parameters to match WhatsAppService's expected format
             const whatsappMessage = {
-                to: recipient,
+                to: recipient, // recipient is the phone number
                 type: 'text',
                 text: message,
             };

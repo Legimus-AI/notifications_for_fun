@@ -23,7 +23,7 @@ class TelegramNotificationAdapter {
         return __awaiter(this, void 0, void 0, function* () {
             // Adapt the parameters to match TelegramService's expected format
             const telegramMessage = {
-                chat_id: recipient,
+                chat_id: recipient, // recipient is the Telegram chat ID
                 text: message,
             };
             // Add optional parameters if provided

@@ -39,8 +39,8 @@ class TelegramService {
      * Sends a message to a Telegram chat
      */
     sendMessage(channelId, message) {
-        var _a;
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
                 const botToken = yield this.getBotToken(channelId);
                 const response = yield axios_1.default.post(`${this.TELEGRAM_API_BASE}${botToken}/sendMessage`, message, {

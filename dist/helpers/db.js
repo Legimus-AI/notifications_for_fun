@@ -9,7 +9,16 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteItem = exports.updateItem = exports.createItem = exports.filterItems = exports.getItem = exports.getAggregatedItems = exports.getItems = exports.getAllItems = exports.checkQueryString = exports.renameKey = exports.listInitOptions = void 0;
+exports.renameKey = exports.listInitOptions = void 0;
+exports.checkQueryString = checkQueryString;
+exports.getAllItems = getAllItems;
+exports.getItems = getItems;
+exports.getAggregatedItems = getAggregatedItems;
+exports.getItem = getItem;
+exports.filterItems = filterItems;
+exports.createItem = createItem;
+exports.updateItem = updateItem;
+exports.deleteItem = deleteItem;
 const utils_1 = require("./utils");
 const buildSort = (sort, order) => {
     return { [sort]: order };
@@ -77,7 +86,6 @@ function checkQueryString(query) {
         }
     });
 }
-exports.checkQueryString = checkQueryString;
 function getAllItems(model) {
     return __awaiter(this, void 0, void 0, function* () {
         return model.find({}, '-updatedAt -createdAt', {
@@ -85,7 +93,6 @@ function getAllItems(model) {
         });
     });
 }
-exports.getAllItems = getAllItems;
 function getItems(req, model, query) {
     return __awaiter(this, void 0, void 0, function* () {
         const options = yield listInitOptions(req);
@@ -103,7 +110,6 @@ function getItems(req, model, query) {
         });
     });
 }
-exports.getItems = getItems;
 function getAggregatedItems(req, model, aggregated) {
     return __awaiter(this, void 0, void 0, function* () {
         const options = yield listInitOptions(req);
@@ -119,7 +125,6 @@ function getAggregatedItems(req, model, aggregated) {
         });
     });
 }
-exports.getAggregatedItems = getAggregatedItems;
 function getItem(id, model) {
     return new Promise((resolve, reject) => __awaiter(this, void 0, void 0, function* () {
         const item = yield model.findById(id);
@@ -129,7 +134,6 @@ function getItem(id, model) {
         resolve(item);
     }));
 }
-exports.getItem = getItem;
 function filterItems(fields, model) {
     return __awaiter(this, void 0, void 0, function* () {
         return new Promise((resolve, reject) => {
@@ -142,7 +146,6 @@ function filterItems(fields, model) {
         });
     });
 }
-exports.filterItems = filterItems;
 function createItem(body, model) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -156,7 +159,6 @@ function createItem(body, model) {
         }
     });
 }
-exports.createItem = createItem;
 function updateItem(id, model, body) {
     return __awaiter(this, void 0, void 0, function* () {
         return new Promise((resolve, reject) => __awaiter(this, void 0, void 0, function* () {
@@ -174,7 +176,6 @@ function updateItem(id, model, body) {
         }));
     });
 }
-exports.updateItem = updateItem;
 function deleteItem(id, model) {
     return __awaiter(this, void 0, void 0, function* () {
         return new Promise((resolve, reject) => __awaiter(this, void 0, void 0, function* () {
@@ -192,5 +193,4 @@ function deleteItem(id, model) {
         }));
     });
 }
-exports.deleteItem = deleteItem;
 //# sourceMappingURL=db.js.map

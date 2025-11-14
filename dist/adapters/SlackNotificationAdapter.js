@@ -23,7 +23,7 @@ class SlackNotificationAdapter {
         return __awaiter(this, void 0, void 0, function* () {
             // Adapt the parameters to match SlackService's expected format
             const slackMessage = {
-                channel: recipient,
+                channel: recipient, // recipient is the Slack channel ID
                 text: message,
             };
             // Add optional parameters if provided
