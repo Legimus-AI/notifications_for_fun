@@ -73,7 +73,13 @@ export type ChannelConfig =
 export interface IChannel extends Document {
   channelId: string;
   ownerApiKeyId: mongoose.Types.ObjectId;
-  type: 'whatsapp_automated' | 'email' | 'sms' | 'telegram' | 'telegram_phones' | 'slack';
+  type:
+    | 'whatsapp_automated'
+    | 'email'
+    | 'sms'
+    | 'telegram'
+    | 'telegram_phones'
+    | 'slack';
   name: string;
   config: ChannelConfig;
   status: string;
@@ -101,7 +107,14 @@ const ChannelSchema = new Schema(
     type: {
       type: String,
       required: true,
-      enum: ['whatsapp_automated', 'email', 'sms', 'telegram', 'telegram_phones', 'slack'],
+      enum: [
+        'whatsapp_automated',
+        'email',
+        'sms',  
+        'telegram',
+        'telegram_phones',
+        'slack',
+      ],
       index: true,
     },
     name: {

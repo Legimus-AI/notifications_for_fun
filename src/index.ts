@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import dotenv from 'dotenv-safe';
 dotenv.config();
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -18,6 +18,10 @@ import { slackService } from './services/SlackService';
 import { telegramService } from './services/TelegramService';
 import { telegramPhonesService } from './services/TelegramPhonesService';
 import { fileCleanupService } from './services/api/FileCleanupService';
+import {
+  startWhatsAppHealthCheck,
+  stopWhatsAppHealthCheck,
+} from './cronjobs/WhatsAppHealthCheckCron';
 
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
@@ -45,6 +49,10 @@ const gracefulShutdown = (signal: string) => {
   // Stop file cleanup service
   console.log('🛑 Stopping file cleanup service...');
   fileCleanupService.stop();
+
+  // Stop WhatsApp health check cron
+  console.log('🛑 Stopping WhatsApp health check cron...');
+  stopWhatsAppHealthCheck();
 
   // Close HTTP server
   httpServer.close(() => {
@@ -185,6 +193,11 @@ const startServer = async () => {
     console.log('🔄 Starting file cleanup service...');
     fileCleanupService.start();
     console.log('✅ File cleanup service started');
+
+    // Start WhatsApp health check cron
+    console.log('🔄 Starting WhatsApp health check cron...');
+    startWhatsAppHealthCheck();
+    console.log('✅ WhatsApp health check cron started');
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);

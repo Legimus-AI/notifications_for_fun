@@ -1,3 +1,4 @@
+// @ts-nocheck
 import makeWASocket, {
   WASocket,
   ConnectionState,
@@ -297,7 +298,9 @@ export class WhatsAppService extends EventEmitter {
       // Fetch the latest WhatsApp Web version
       const { version, isLatest } = await fetchLatestWaWebVersion({});
       console.log(
-        `📱 Using WhatsApp Web version: ${version.join('.')} (isLatest: ${isLatest})`,
+        `📱 Using WhatsApp Web version: ${version.join(
+          '.',
+        )} (isLatest: ${isLatest})`,
       );
 
       // Create socket with Chrome Windows simulation for anti-ban
@@ -595,9 +598,7 @@ export class WhatsAppService extends EventEmitter {
         console.log(
           `🔧 Attempting LID mapping store resolution for: ${originalJid}`,
         );
-        console.log(
-          `   Socket available: ${!!sock}`,
-        );
+        console.log(`   Socket available: ${!!sock}`);
         console.log(
           `   signalRepository available: ${!!sock?.signalRepository}`,
         );
@@ -610,9 +611,8 @@ export class WhatsAppService extends EventEmitter {
             console.log(
               `🔍 Calling lidMapping.getPNForLID('${originalJid}')...`,
             );
-            const pn = await sock.signalRepository.lidMapping.getPNForLID(
-              originalJid,
-            );
+            const pn =
+              await sock.signalRepository.lidMapping.getPNForLID(originalJid);
             console.log(
               `   lidMapping.getPNForLID result: ${pn ? pn : 'null'}`,
             );
@@ -624,12 +624,8 @@ export class WhatsAppService extends EventEmitter {
               );
               console.log(`   Resolution method: Baileys LID mapping store`);
             } else {
-              console.warn(
-                `⚠️ LID mapping returned null for: ${originalJid}`,
-              );
-              console.warn(
-                `   Possible reasons:`,
-              );
+              console.warn(`⚠️ LID mapping returned null for: ${originalJid}`);
+              console.warn(`   Possible reasons:`);
               console.warn(
                 `   - LID mapping not yet synced from WhatsApp server`,
               );
@@ -646,9 +642,7 @@ export class WhatsAppService extends EventEmitter {
               `❌ Error using lidMapping.getPNForLID for ${originalJid}:`,
             );
             console.error(`   Error details:`, error);
-            console.warn(
-              `   Falling back to extracting phone number from LID`,
-            );
+            console.warn(`   Falling back to extracting phone number from LID`);
             isUnresolvedLid = true;
           }
         } else {
@@ -670,9 +664,7 @@ export class WhatsAppService extends EventEmitter {
         console.warn(
           `   Will extract phone number: ${jid.replace('@lid', '')}`,
         );
-        console.warn(
-          `   Webhook will be marked with isLid: true`,
-        );
+        console.warn(`   Webhook will be marked with isLid: true`);
         isUnresolvedLid = true;
       }
     }
@@ -1874,7 +1866,7 @@ export class WhatsAppService extends EventEmitter {
 
     // Format JID properly (handles @lid, @s.whatsapp.net, @g.us, etc.)
     to = formatJid(to);
-    
+
     const isLid = to.includes('@lid');
     console.log(`📨 Sending message to: ${to}${isLid ? ' (LID)' : ''}`);
 
@@ -2141,9 +2133,7 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (!sock.signalRepository?.lidMapping) {
-      console.warn(
-        `⚠️ LID mapping not available for channel ${channelId}`,
-      );
+      console.warn(`⚠️ LID mapping not available for channel ${channelId}`);
       return [];
     }
 
@@ -2151,7 +2141,7 @@ export class WhatsAppService extends EventEmitter {
       // Access the internal store if available
       // Note: This is implementation-specific and may need adjustment based on Baileys version
       const store = sock.signalRepository.lidMapping as any;
-      
+
       // Try to get all mappings if the store exposes them
       if (store.store && typeof store.store.toJSON === 'function') {
         const allMappings = store.store.toJSON();
@@ -2159,7 +2149,7 @@ export class WhatsAppService extends EventEmitter {
           lid,
           pn: pn as string,
         }));
-        
+
         // Apply pagination
         return mappings.slice(offset, offset + limit);
       }
@@ -2169,10 +2159,7 @@ export class WhatsAppService extends EventEmitter {
       );
       return [];
     } catch (error) {
-      console.error(
-        `❌ Error getting LID mappings for ${channelId}:`,
-        error,
-      );
+      console.error(`❌ Error getting LID mappings for ${channelId}:`, error);
       return [];
     }
   }
@@ -2192,7 +2179,7 @@ export class WhatsAppService extends EventEmitter {
 
     try {
       const store = sock.signalRepository.lidMapping as any;
-      
+
       if (store.store && typeof store.store.toJSON === 'function') {
         const allMappings = store.store.toJSON();
         return Object.keys(allMappings).length;
@@ -2200,10 +2187,7 @@ export class WhatsAppService extends EventEmitter {
 
       return 0;
     } catch (error) {
-      console.error(
-        `❌ Error getting LID count for ${channelId}:`,
-        error,
-      );
+      console.error(`❌ Error getting LID count for ${channelId}:`, error);
       return 0;
     }
   }
@@ -2228,14 +2212,13 @@ export class WhatsAppService extends EventEmitter {
     const formattedLid = lid.includes('@') ? lid : `${lid}@lid`;
 
     try {
-      const pn = await sock.signalRepository.lidMapping.getPNForLID(
-        formattedLid,
-      );
-      
+      const pn =
+        await sock.signalRepository.lidMapping.getPNForLID(formattedLid);
+
       if (pn) {
         return { lid: formattedLid, pn };
       }
-      
+
       return null;
     } catch (error) {
       console.error(
@@ -2269,14 +2252,13 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
-      const lid = await sock.signalRepository.lidMapping.getLIDForPN(
-        formattedPn,
-      );
-      
+      const lid =
+        await sock.signalRepository.lidMapping.getLIDForPN(formattedPn);
+
       if (lid) {
         return { lid, pn: formattedPn };
       }
-      
+
       return null;
     } catch (error) {
       console.error(

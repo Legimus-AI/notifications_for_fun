@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { FileCleanupService } from '../services/FileCleanupService';
+import { FileCleanupService } from '../services/api/FileCleanupService';
 
 describe('FileCleanupService', () => {
   let cleanupService: FileCleanupService;
