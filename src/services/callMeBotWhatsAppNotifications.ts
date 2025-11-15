@@ -28,6 +28,7 @@ export const sendCallMeBotNotification = async (
       console.error(
         `❌ CallMeBot notification failed with status: ${response.status}`,
       );
+      console.error(`❌ CallMeBot notification failed with status: ${response.data}`);
       return false;
     }
   } catch (error) {
