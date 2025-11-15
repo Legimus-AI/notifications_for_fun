@@ -197,10 +197,16 @@ const startServer = async () => {
     fileCleanupService.start();
     console.log('✅ File cleanup service started');
 
-    // Start WhatsApp health check cron
-    console.log('🔄 Starting WhatsApp health check cron...');
-    startWhatsAppHealthCheck();
-    console.log('✅ WhatsApp health check cron started');
+    // Start WhatsApp health check cron (production only)
+    if (process.env.NODE_ENV === 'production') {
+      console.log('🔄 Starting WhatsApp health check cron...');
+      startWhatsAppHealthCheck();
+      console.log('✅ WhatsApp health check cron started');
+    } else {
+      console.log(
+        '⏭️ WhatsApp health check cron skipped (not in production)',
+      );
+    }
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);

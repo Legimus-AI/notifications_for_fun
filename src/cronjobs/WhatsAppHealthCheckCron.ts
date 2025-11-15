@@ -180,6 +180,9 @@ const filterChannelsForAlert = (
   return channelsToAlert;
 };
 
+// Track if notification is currently being sent to prevent duplicates
+let isNotificationInProgress = false;
+
 /**
  * Send notification about unhealthy channels
  */
@@ -190,119 +193,128 @@ const notifyUnhealthyChannels = async (
     return;
   }
 
-  // Filter channels based on alert counter
-  const channelsToAlert = filterChannelsForAlert(unhealthy);
-
-  if (channelsToAlert.length === 0) {
-    console.log(
-      '⏭️ All unhealthy channels have reached max alerts, no notification sent',
-    );
+  // Prevent duplicate notifications if one is already in progress
+  if (isNotificationInProgress) {
+    console.log('⏭️ Notification already in progress, skipping duplicate');
     return;
   }
 
-  // Helper function to get status emoji and description
-  const getStatusInfo = (
-    status: string,
-  ): { emoji: string; description: string } => {
-    const statusMap: Record<string, { emoji: string; description: string }> = {
-      no_connection: { emoji: '🔌', description: 'No Connection' },
-      status_inactive: { emoji: '⚫', description: 'Inactive' },
-      status_disconnected: { emoji: '🔴', description: 'Disconnected' },
-      status_connecting: { emoji: '🟡', description: 'Connecting' },
-      status_qr_ready: { emoji: '📱', description: 'QR Ready' },
-      status_pairing_code_ready: {
-        emoji: '🔑',
-        description: 'Pairing Code Ready',
-      },
-      phone_not_registered: {
-        emoji: '❌',
-        description: 'Number Not Registered',
-      },
-      check_error: { emoji: '⚠️', description: 'Check Error' },
+  try {
+    isNotificationInProgress = true;
+
+    // Filter channels based on alert counter
+    const channelsToAlert = filterChannelsForAlert(unhealthy);
+
+    if (channelsToAlert.length === 0) {
+      console.log(
+        '⏭️ All unhealthy channels have reached max alerts, no notification sent',
+      );
+      return;
+    }
+
+    // Helper function to get status emoji and description
+    const getStatusInfo = (
+      status: string,
+    ): { emoji: string; description: string } => {
+      const statusMap: Record<string, { emoji: string; description: string }> = {
+        no_connection: { emoji: '🔌', description: 'No Connection' },
+        status_inactive: { emoji: '⚫', description: 'Inactive' },
+        status_disconnected: { emoji: '🔴', description: 'Disconnected' },
+        status_connecting: { emoji: '🟡', description: 'Connecting' },
+        status_qr_ready: { emoji: '📱', description: 'QR Ready' },
+        status_pairing_code_ready: {
+          emoji: '🔑',
+          description: 'Pairing Code Ready',
+        },
+        phone_not_registered: {
+          emoji: '❌',
+          description: 'Number Not Registered',
+        },
+        check_error: { emoji: '⚠️', description: 'Check Error' },
+      };
+
+      // Handle status_ prefix
+      const normalizedStatus = status.startsWith('status_')
+        ? status
+        : `status_${status}`;
+
+      return (
+        statusMap[normalizedStatus] ||
+        statusMap[status] || {
+          emoji: '❓',
+          description: status
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (l) => l.toUpperCase()),
+        }
+      );
     };
 
-    // Handle status_ prefix
-    const normalizedStatus = status.startsWith('status_')
-      ? status
-      : `status_${status}`;
-
-    return (
-      statusMap[normalizedStatus] ||
-      statusMap[status] || {
-        emoji: '❓',
-        description: status
-          .replace(/_/g, ' ')
-          .replace(/\b\w/g, (l) => l.toUpperCase()),
+    // Format phone number nicely
+    const formatPhoneNumber = (phone?: string): string => {
+      if (!phone) return 'N/A';
+      // Format: +XX XXX XXX XXXX or just show as is if already formatted
+      const cleaned = phone.replace(/[^0-9]/g, '');
+      if (cleaned.length >= 10) {
+        return `+${cleaned}`;
       }
-    );
-  };
+      return phone;
+    };
 
-  // Format phone number nicely
-  const formatPhoneNumber = (phone?: string): string => {
-    if (!phone) return 'N/A';
-    // Format: +XX XXX XXX XXXX or just show as is if already formatted
-    const cleaned = phone.replace(/[^0-9]/g, '');
-    if (cleaned.length >= 10) {
-      return `+${cleaned}`;
-    }
-    return phone;
-  };
+    // Build beautiful message
+    const channelCount = channelsToAlert.length;
+    const header = `🚨 *WhatsApp Health Alert* 🚨\n\n`;
+    const summary = `📊 *${channelCount} channel${channelCount > 1 ? 's' : ''} ${
+      channelCount > 1 ? 'are' : 'is'
+    } affected*\n\n`;
+    const separator = '━━━━━━━━━━━━━━━━━━━━';
 
-  // Build beautiful message
-  const channelCount = channelsToAlert.length;
-  const header = `🚨 *WhatsApp Health Alert* 🚨\n\n`;
-  const summary = `📊 *${channelCount} channel${channelCount > 1 ? 's' : ''} ${
-    channelCount > 1 ? 'are' : 'is'
-  } affected*\n\n`;
-  const separator = '━━━━━━━━━━━━━━━━━━━━\n';
+    const channelsList = channelsToAlert
+      .map((ch, index) => {
+        const shortId = ch.channelId.substring(0, 8);
+        const statusInfo = getStatusInfo(ch.status);
+        const formattedPhone = formatPhoneNumber(ch.phoneNumber);
 
-  const channelsList = channelsToAlert
-    .map((ch, index) => {
-      const shortId = ch.channelId.substring(0, 8);
-      const statusInfo = getStatusInfo(ch.status);
-      const formattedPhone = formatPhoneNumber(ch.phoneNumber);
+        return `${index + 1}. ${
+          statusInfo.emoji
+        } *${formattedPhone}*\n   └─ ID: \`${shortId}\`\n   └─ Status: ${
+          statusInfo.description
+        }`;
+      })
+      .join('\n\n');
 
-      return `${index + 1}. ${
-        statusInfo.emoji
-      } *${formattedPhone}*\n   └─ ID: \`${shortId}\`\n   └─ Status: ${
-        statusInfo.description
-      }`;
-    })
-    .join('\n\n');
-
-  const footer = `\n\n━━━━━━━━━━━━━━━━━━━━\n⏰ ${new Date().toLocaleString(
-    'en-US',
-    {
+    const footer = `\n\n${separator}\n⏰ ${new Date().toLocaleString('en-US', {
       timeZone: 'UTC',
       dateStyle: 'short',
       timeStyle: 'short',
-    },
-  )} UTC`;
+    })} UTC`;
 
-  const message = `${header}${summary}${separator}\n${channelsList}${footer}`;
+    const message = `${header}${summary}${separator}\n\n${channelsList}${footer}`;
 
-  console.log(
-    `📤 Sending health alert notification to ${CALLMEBOT_RECIPIENTS.length} recipient(s)...`,
-  );
-
-  // Send notification to all configured recipients
-  const sendPromises = CALLMEBOT_RECIPIENTS.map((recipient) => {
     console.log(
-      `📱 Sending to ${recipient.name || recipient.phone} (${recipient.phone})...`,
+      `📤 Sending health alert notification to ${CALLMEBOT_RECIPIENTS.length} recipient(s)...`,
     );
-    return sendCallMeBotNotification(recipient.phone, message, recipient.apiKey);
-  });
 
-  // Wait for all notifications to be sent
-  const results = await Promise.allSettled(sendPromises);
+    // Send notification to all configured recipients
+    const sendPromises = CALLMEBOT_RECIPIENTS.map((recipient) => {
+      console.log(
+        `📱 Sending to ${recipient.name || recipient.phone} (${recipient.phone})...`,
+      );
+      return sendCallMeBotNotification(recipient.phone, message, recipient.apiKey);
+    });
 
-  // Log results
-  const successful = results.filter((r) => r.status === 'fulfilled').length;
-  const failed = results.filter((r) => r.status === 'rejected').length;
+    // Wait for all notifications to be sent
+    const results = await Promise.allSettled(sendPromises);
 
-  console.log(
-    `✅ Notifications sent: ${successful} successful, ${failed} failed`,
-  );
+    // Log results
+    const successful = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+
+    console.log(
+      `✅ Notifications sent: ${successful} successful, ${failed} failed`,
+    );
+  } finally {
+    isNotificationInProgress = false;
+  }
 };
 
 /**
