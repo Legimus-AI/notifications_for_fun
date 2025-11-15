@@ -2,11 +2,12 @@ import * as cron from 'node-cron';
 import { whatsAppService } from '../services/WhatsAppService';
 import { sendCallMeBotNotification } from '../services/callMeBotWhatsAppNotifications';
 import Channel from '../models/Channels';
-
-// Configuration from environment variables
-const CALLMEBOT_PHONE = process.env.CALLMEBOT_PHONE || '51983724476';
-const CALLMEBOT_API_KEY = process.env.CALLMEBOT_API_KEY || '4189609';
-const MAX_CONSECUTIVE_ALERTS = 3;
+import {
+  CALLMEBOT_RECIPIENTS,
+  MAX_CONSECUTIVE_ALERTS,
+  HEALTH_CHECK_SCHEDULE,
+  HEALTH_CHECK_TIMEZONE,
+} from '../config/healthCheck.config';
 
 // Track alert counts per channel
 // Structure: { channelId: { count: number, lastStatus: string } }
@@ -280,9 +281,28 @@ const notifyUnhealthyChannels = async (
 
   const message = `${header}${summary}${separator}\n${channelsList}${footer}`;
 
-  console.log('📤 Sending health alert notification via CallMeBot...');
+  console.log(
+    `📤 Sending health alert notification to ${CALLMEBOT_RECIPIENTS.length} recipient(s)...`,
+  );
 
-  await sendCallMeBotNotification(CALLMEBOT_PHONE, message, CALLMEBOT_API_KEY);
+  // Send notification to all configured recipients
+  const sendPromises = CALLMEBOT_RECIPIENTS.map((recipient) => {
+    console.log(
+      `📱 Sending to ${recipient.name || recipient.phone} (${recipient.phone})...`,
+    );
+    return sendCallMeBotNotification(recipient.phone, message, recipient.apiKey);
+  });
+
+  // Wait for all notifications to be sent
+  const results = await Promise.allSettled(sendPromises);
+
+  // Log results
+  const successful = results.filter((r) => r.status === 'fulfilled').length;
+  const failed = results.filter((r) => r.status === 'rejected').length;
+
+  console.log(
+    `✅ Notifications sent: ${successful} successful, ${failed} failed`,
+  );
 };
 
 /**
@@ -333,19 +353,22 @@ export const startWhatsAppHealthCheck = (): void => {
 
   console.log('🏥 Starting WhatsApp health check cron...');
 
-  // Run every 5 minutes: */5 * * * *
+  // Run on configured schedule
   healthCheckJob = cron.schedule(
-    '*/5 * * * *',
+    HEALTH_CHECK_SCHEDULE,
     () => {
       executeHealthCheck();
     },
     {
-      timezone: 'UTC',
+      timezone: HEALTH_CHECK_TIMEZONE,
     },
   );
 
+  // Start the cron job explicitly
+  healthCheckJob.start();
+
   console.log(
-    '✅ WhatsApp health check cron started - running every 5 minutes',
+    `✅ WhatsApp health check cron started - running on schedule: ${HEALTH_CHECK_SCHEDULE}`,
   );
 
   // Execute immediately on start
