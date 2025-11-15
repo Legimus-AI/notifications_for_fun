@@ -33,6 +33,7 @@ const SlackService_1 = require("./services/SlackService");
 const TelegramService_1 = require("./services/TelegramService");
 const TelegramPhonesService_1 = require("./services/TelegramPhonesService");
 const FileCleanupService_1 = require("./services/api/FileCleanupService");
+const WhatsAppHealthCheckCron_1 = require("./cronjobs/WhatsAppHealthCheckCron");
 console.log('Env variables:', process.env);
 console.log('Env variables:', process.env.DOMAIN);
 // =================================================================
@@ -57,6 +58,9 @@ const gracefulShutdown = (signal) => {
     // Stop file cleanup service
     console.log('🛑 Stopping file cleanup service...');
     FileCleanupService_1.fileCleanupService.stop();
+    // Stop WhatsApp health check cron
+    console.log('🛑 Stopping WhatsApp health check cron...');
+    (0, WhatsAppHealthCheckCron_1.stopWhatsAppHealthCheck)();
     // Close HTTP server
     httpServer.close(() => {
         console.log('✅ HTTP server closed');
@@ -168,6 +172,10 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         console.log('🔄 Starting file cleanup service...');
         FileCleanupService_1.fileCleanupService.start();
         console.log('✅ File cleanup service started');
+        // Start WhatsApp health check cron
+        console.log('🔄 Starting WhatsApp health check cron...');
+        (0, WhatsAppHealthCheckCron_1.startWhatsAppHealthCheck)();
+        console.log('✅ WhatsApp health check cron started');
     }
     catch (error) {
         console.error('❌ Failed to start server:', error);
