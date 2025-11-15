@@ -35,6 +35,7 @@ const sendCallMeBotNotification = (phone, message, apiKey) => __awaiter(void 0, 
         }
         else {
             console.error(`❌ CallMeBot notification failed with status: ${response.status}`);
+            console.error(`❌ CallMeBot notification failed with status: ${response.data}`);
             return false;
         }
     }

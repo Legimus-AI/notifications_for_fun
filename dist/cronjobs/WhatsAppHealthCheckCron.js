@@ -50,10 +50,7 @@ const cron = __importStar(require("node-cron"));
 const WhatsAppService_1 = require("../services/WhatsAppService");
 const callMeBotWhatsAppNotifications_1 = require("../services/callMeBotWhatsAppNotifications");
 const Channels_1 = __importDefault(require("../models/Channels"));
-// Configuration from environment variables
-const CALLMEBOT_PHONE = process.env.CALLMEBOT_PHONE || '51983724476';
-const CALLMEBOT_API_KEY = process.env.CALLMEBOT_API_KEY || '4189609';
-const MAX_CONSECUTIVE_ALERTS = 3;
+const healthCheck_config_1 = require("../config/healthCheck.config");
 // Track alert counts per channel
 // Structure: { channelId: { count: number, lastStatus: string } }
 const alertCounters = new Map();
@@ -159,19 +156,19 @@ const filterChannelsForAlert = (unhealthy) => {
             // First alert for this channel
             alertCounters.set(channelId, { count: 1, lastStatus: status });
             channelsToAlert.push(channel);
-            console.log(`📊 ${channelId}: First alert (1/${MAX_CONSECUTIVE_ALERTS})`);
+            console.log(`📊 ${channelId}: First alert (1/${healthCheck_config_1.MAX_CONSECUTIVE_ALERTS})`);
         }
-        else if (counter.count < MAX_CONSECUTIVE_ALERTS) {
+        else if (counter.count < healthCheck_config_1.MAX_CONSECUTIVE_ALERTS) {
             // Increment counter and send alert
             counter.count++;
             counter.lastStatus = status;
             alertCounters.set(channelId, counter);
             channelsToAlert.push(channel);
-            console.log(`📊 ${channelId}: Alert ${counter.count}/${MAX_CONSECUTIVE_ALERTS}`);
+            console.log(`📊 ${channelId}: Alert ${counter.count}/${healthCheck_config_1.MAX_CONSECUTIVE_ALERTS}`);
         }
         else {
             // Max alerts reached, don't send
-            console.log(`⏭️ ${channelId}: Max alerts (${MAX_CONSECUTIVE_ALERTS}) reached, skipping notification`);
+            console.log(`⏭️ ${channelId}: Max alerts (${healthCheck_config_1.MAX_CONSECUTIVE_ALERTS}) reached, skipping notification`);
         }
     }
     return channelsToAlert;
@@ -249,8 +246,18 @@ const notifyUnhealthyChannels = (unhealthy) => __awaiter(void 0, void 0, void 0,
         timeStyle: 'short',
     })} UTC`;
     const message = `${header}${summary}${separator}\n${channelsList}${footer}`;
-    console.log('📤 Sending health alert notification via CallMeBot...');
-    yield (0, callMeBotWhatsAppNotifications_1.sendCallMeBotNotification)(CALLMEBOT_PHONE, message, CALLMEBOT_API_KEY);
+    console.log(`📤 Sending health alert notification to ${healthCheck_config_1.CALLMEBOT_RECIPIENTS.length} recipient(s)...`);
+    // Send notification to all configured recipients
+    const sendPromises = healthCheck_config_1.CALLMEBOT_RECIPIENTS.map((recipient) => {
+        console.log(`📱 Sending to ${recipient.name || recipient.phone} (${recipient.phone})...`);
+        return (0, callMeBotWhatsAppNotifications_1.sendCallMeBotNotification)(recipient.phone, message, recipient.apiKey);
+    });
+    // Wait for all notifications to be sent
+    const results = yield Promise.allSettled(sendPromises);
+    // Log results
+    const successful = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    console.log(`✅ Notifications sent: ${successful} successful, ${failed} failed`);
 });
 /**
  * Execute health check and notify if needed
@@ -289,13 +296,15 @@ const startWhatsAppHealthCheck = () => {
         return;
     }
     console.log('🏥 Starting WhatsApp health check cron...');
-    // Run every 5 minutes: */5 * * * *
-    healthCheckJob = cron.schedule('*/5 * * * *', () => {
+    // Run on configured schedule
+    healthCheckJob = cron.schedule(healthCheck_config_1.HEALTH_CHECK_SCHEDULE, () => {
         executeHealthCheck();
     }, {
-        timezone: 'UTC',
+        timezone: healthCheck_config_1.HEALTH_CHECK_TIMEZONE,
     });
-    console.log('✅ WhatsApp health check cron started - running every 5 minutes');
+    // Start the cron job explicitly
+    healthCheckJob.start();
+    console.log(`✅ WhatsApp health check cron started - running on schedule: ${healthCheck_config_1.HEALTH_CHECK_SCHEDULE}`);
     // Execute immediately on start
     executeHealthCheck();
 };
