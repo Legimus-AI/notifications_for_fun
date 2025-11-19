@@ -46,7 +46,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.whatsAppService = exports.WhatsAppService = void 0;
-// @ts-nocheck
 const baileys_1 = __importStar(require("@whiskeysockets/baileys"));
 const qrcode_1 = __importDefault(require("qrcode"));
 const node_cache_1 = __importDefault(require("node-cache"));
