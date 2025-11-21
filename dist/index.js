@@ -138,6 +138,7 @@ const startServer = () => __awaiter(void 0, void 0, void 0, function* () {
         const port = app.get('port');
         httpServer.listen(port, () => {
             console.log(`🚀 Server running on port ${port}`);
+            console.log(`🚀 Environment: ${process.env.NODE_ENV}`);
             console.log(`📱 WhatsApp service ready`);
             console.log(`💬 Slack service ready`);
             console.log(`📲 Telegram service ready`);
