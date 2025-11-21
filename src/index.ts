@@ -155,6 +155,7 @@ const startServer = async () => {
     const port = app.get('port');
     httpServer.listen(port, () => {
       console.log(`🚀 Server running on port ${port}`);
+      console.log(`🚀 Environment: ${process.env.NODE_ENV}`);
       console.log(`📱 WhatsApp service ready`);
       console.log(`💬 Slack service ready`);
       console.log(`📲 Telegram service ready`);
@@ -199,9 +200,9 @@ const startServer = async () => {
 
     // Start WhatsApp health check cron (production only)
     if (process.env.NODE_ENV === 'production') {
-      console.log('🔄 Starting WhatsApp health check cron...');
-      startWhatsAppHealthCheck();
-      console.log('✅ WhatsApp health check cron started');
+    console.log('🔄 Starting WhatsApp health check cron...');
+    startWhatsAppHealthCheck();
+    console.log('✅ WhatsApp health check cron started');
     } else {
       console.log(
         '⏭️ WhatsApp health check cron skipped (not in production)',
