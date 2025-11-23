@@ -23,6 +23,7 @@ import {
   stopWhatsAppHealthCheck,
 } from './cronjobs/WhatsAppHealthCheckCron';
 
+
 // =================================================================
 // ✨ NEW: Global Error Handlers for Uncaught Exceptions and Rejections
 // =================================================================
@@ -37,9 +38,6 @@ process.on('unhandledRejection', (reason, promise) => {
 // Catch uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
-  // This is a critical error. The process is in an undefined state.
-  // It's not safe to continue. Perform synchronous cleanup and then shut down.
-  process.exit(1);
 });
 
 // Graceful shutdown handling

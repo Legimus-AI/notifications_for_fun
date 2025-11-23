@@ -757,6 +757,57 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Helper function to send webhook with retry logic
+   */
+  private async sendWebhookWithRetry(
+    webhook: any,
+    payload: any,
+    channelId: string,
+    event: string,
+  ): Promise<void> {
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1 second
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await axios.post(webhook.url, payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Channel-Id': channelId,
+            'X-Event': event,
+          },
+          timeout: 30000, // 30 second timeout
+        });
+
+        if (attempt > 0) {
+          console.log(`  ✅ Successfully sent to ${webhook.url} on attempt ${attempt + 1}`);
+        }
+        return; // Success, exit retry loop
+
+      } catch (error: any) {
+        const isLastAttempt = attempt === maxRetries;
+
+        if (isLastAttempt) {
+          console.error(
+            `❌ Final attempt failed for webhook ${webhook.url} after ${maxRetries + 1} attempts:`,
+            error.message,
+          );
+          return; // Don't rethrow, just log the final failure
+        }
+
+        // Calculate exponential backoff delay: 1s, 2s, 4s
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(
+          `  ⚠️  Attempt ${attempt + 1} failed for ${webhook.url}, retrying in ${delay / 1000}s...`,
+          error.message
+        );
+
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  /**
    * Sends payload to configured webhooks for a given event.
    */
   private async sendToWebhooks(channelId: string, event: string, payload: any) {
@@ -780,21 +831,7 @@ export class WhatsAppService extends EventEmitter {
 
       const webhookPromises = webhooksToTrigger.map((webhook) => {
         console.log(`  -> Sending to ${webhook.url}`);
-        return axios
-          .post(webhook.url, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Channel-Id': channelId,
-              'X-Event': event,
-            },
-          })
-          .catch((error) => {
-            console.error(
-              `❌ Error sending webhook to ${webhook.url}:`,
-              error.message,
-            );
-            // We don't rethrow, just log the error to not stop other webhooks
-          });
+        return this.sendWebhookWithRetry(webhook, payload, channelId, event);
       });
 
       await Promise.all(webhookPromises);
