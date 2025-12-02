@@ -313,6 +313,7 @@ export class WhatsAppService extends EventEmitter {
         syncFullHistory: false, // Reduces bandwidth and suspicion
         defaultQueryTimeoutMs: 60000,
         emitOwnEvents: false, // Don't emit events for own messages
+        generateHighQualityLinkPreview: true, // Enable large thumbnail link previews
         // Implement cached group metadata to prevent rate limits and bans
         cachedGroupMetadata: async (jid) => {
           const cached = this.groupCache.get(jid);
