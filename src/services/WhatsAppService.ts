@@ -1352,6 +1352,97 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Extracts URL from text message
+   */
+  private extractUrlFromText(text: string): string | null {
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const matches = text.match(urlRegex);
+    return matches ? matches[0] : null;
+  }
+
+  /**
+   * Checks if URL is from Instagram
+   */
+  private isInstagramUrl(url: string): boolean {
+    return url.includes('instagram.com') || url.includes('instagr.am');
+  }
+
+  /**
+   * Fetches Instagram link preview using oEmbed API
+   */
+  private async getInstagramLinkPreview(
+    url: string,
+  ): Promise<any | null> {
+    try {
+      console.log(`📸 Fetching Instagram link preview for: ${url}`);
+
+      // Use Instagram's oEmbed API
+      const oEmbedUrl = `https://www.instagram.com/api/v1/oembed/?url=${encodeURIComponent(url)}`;
+      const response = await axios.get(oEmbedUrl, {
+        timeout: 10000,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
+
+      const data = response.data;
+      console.log(`✅ Instagram oEmbed response:`, JSON.stringify(data, null, 2));
+
+      if (!data.title && !data.author_name) {
+        console.log('⚠️ Instagram oEmbed returned no useful data');
+        return null;
+      }
+
+      // Build link preview object for Baileys
+      const linkPreview: any = {
+        'canonical-url': url,
+        'matched-text': url,
+        title: data.title || `${data.author_name} on Instagram`,
+        description:
+          data.title ||
+          `Post by ${data.author_name}` ||
+          'Instagram post',
+      };
+
+      // Try to get thumbnail from oEmbed
+      if (data.thumbnail_url) {
+        try {
+          console.log(`🖼️ Fetching Instagram thumbnail: ${data.thumbnail_url}`);
+
+          // Download and upload the thumbnail for high quality preview
+          const imageResponse = await axios.get(data.thumbnail_url, {
+            responseType: 'arraybuffer',
+            timeout: 15000,
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+          });
+
+          const imageBuffer = Buffer.from(imageResponse.data);
+          linkPreview.jpegThumbnail = imageBuffer;
+          linkPreview.originalThumbnailUrl = data.thumbnail_url;
+
+          console.log(
+            `✅ Instagram thumbnail fetched: ${imageBuffer.length} bytes`,
+          );
+        } catch (thumbError) {
+          console.error(
+            `⚠️ Failed to fetch Instagram thumbnail:`,
+            thumbError.message,
+          );
+        }
+      }
+
+      return linkPreview;
+    } catch (error) {
+      console.error(`❌ Error fetching Instagram link preview:`, error.message);
+      return null;
+    }
+  }
+
+  /**
    * Sends a text message
    */
   async sendTextMessage(
@@ -1365,7 +1456,19 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
-      const message = await sock.sendMessage(to, { text });
+      // Check if message contains an Instagram URL
+      const url = this.extractUrlFromText(text);
+      const messageContent: any = { text };
+
+      if (url && this.isInstagramUrl(url)) {
+        const linkPreview = await this.getInstagramLinkPreview(url);
+        if (linkPreview) {
+          messageContent.linkPreview = linkPreview;
+          console.log(`📎 Using custom Instagram link preview`);
+        }
+      }
+
+      const message = await sock.sendMessage(to, messageContent);
       console.log(`📤 Message sent from ${channelId} to ${to}`);
       return message;
     } catch (error) {
@@ -1947,9 +2050,21 @@ export class WhatsAppService extends EventEmitter {
     }
 
     switch (payload.type) {
-      case 'text':
-        messageContent = { text: payload.text.body };
+      case 'text': {
+        const textBody = payload.text.body;
+        messageContent = { text: textBody };
+
+        // Check for Instagram URLs and add custom link preview
+        const urlInText = this.extractUrlFromText(textBody);
+        if (urlInText && this.isInstagramUrl(urlInText)) {
+          const instagramPreview = await this.getInstagramLinkPreview(urlInText);
+          if (instagramPreview) {
+            messageContent.linkPreview = instagramPreview;
+            console.log(`📎 Using custom Instagram link preview for API message`);
+          }
+        }
         break;
+      }
       case 'image':
       case 'video':
       case 'audio': {
