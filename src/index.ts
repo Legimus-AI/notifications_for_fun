@@ -22,6 +22,7 @@ import {
   startWhatsAppHealthCheck,
   stopWhatsAppHealthCheck,
 } from './cronjobs/WhatsAppHealthCheckCron';
+import { healthCheckService } from './services/HealthCheckService';
 
 
 // =================================================================
@@ -80,12 +81,44 @@ app.get('/', (req: express.Request, res: express.Response) => {
   res.send('Hello World!');
 });
 
-app.get('/health', (req: express.Request, res: express.Response) => {
-  res.status(200).json({
-    ok: true,
-    message: 'OK',
-    version: '1.0.1',
-  });
+app.get('/health', async (req: express.Request, res: express.Response) => {
+  const requestStartTime = Date.now();
+  try {
+    const detailed = req.query.detailed === 'true';
+
+    if (detailed) {
+      // Return comprehensive health check
+      const systemHealth = await healthCheckService.getSystemHealth();
+      const totalResponseTime = Date.now() - requestStartTime;
+      const statusCode = systemHealth.status === 'healthy' ? 200 :
+                        systemHealth.status === 'degraded' ? 200 : 503;
+      res.status(statusCode).json({
+        ...systemHealth,
+        totalResponseTime,
+        ms: totalResponseTime,
+      });
+    } else {
+      // Return basic health check for load balancers
+      const basicHealth = await healthCheckService.getBasicHealth();
+      const totalResponseTime = Date.now() - requestStartTime;
+      const statusCode = basicHealth.ok ? 200 : 503;
+      res.status(statusCode).json({
+        ...basicHealth,
+        totalResponseTime,
+        ms: totalResponseTime,
+      });
+    }
+  } catch (error) {
+    const totalResponseTime = Date.now() - requestStartTime;
+    console.error('Health check failed:', error);
+    res.status(503).json({
+      ok: false,
+      status: 'Health check failed',
+      error: error instanceof Error ? error.message : 'Unknown error',
+      totalResponseTime,
+      ms: totalResponseTime,
+    });
+  }
 });
 
 // Enable only in development HTTP request logger middleware
