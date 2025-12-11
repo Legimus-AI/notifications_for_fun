@@ -13,7 +13,7 @@ import initMongo from './config/mongo';
 import path from 'path';
 import { createServer } from 'http';
 import { SocketService } from './services/api/SocketService';
-import { whatsAppService } from './services/WhatsAppService';
+// import { whatsAppService } from './services/WhatsAppService';
 import { slackService } from './services/SlackService';
 import { telegramService } from './services/TelegramService';
 import { telegramPhonesService } from './services/TelegramPhonesService';
