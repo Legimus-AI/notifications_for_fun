@@ -1443,7 +1443,82 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Sends a text message
+   * Marks messages as read (sends "seen" status)
+   * Call this before responding to simulate human-like behavior
+   */
+  async markAsRead(
+    channelId: string,
+    messageKeys: { remoteJid: string; id: string; participant?: string }[],
+  ): Promise<void> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      console.warn(`⚠️ Cannot mark as read: Channel ${channelId} not connected`);
+      return;
+    }
+
+    try {
+      await sock.readMessages(messageKeys);
+      console.log(`👁️ Marked ${messageKeys.length} message(s) as read`);
+    } catch (error) {
+      console.error(`❌ Error marking messages as read:`, error);
+      // Don't throw - this is a non-critical operation
+    }
+  }
+
+  /**
+   * Sends "composing" presence to show typing indicator
+   * Call this when agent starts processing a response
+   */
+  async startTyping(channelId: string, jid: string): Promise<void> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      console.warn(`⚠️ Cannot start typing: Channel ${channelId} not connected`);
+      return;
+    }
+
+    try {
+      await sock.sendPresenceUpdate('composing', jid);
+      console.log(`⌨️ Started typing indicator for ${jid}`);
+    } catch (error) {
+      console.error(`❌ Error starting typing indicator:`, error);
+      // Don't throw - this is a non-critical operation
+    }
+  }
+
+  /**
+   * Sends "paused" presence to hide typing indicator
+   * Call this right before sending the message
+   */
+  async stopTyping(channelId: string, jid: string): Promise<void> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      console.warn(`⚠️ Cannot stop typing: Channel ${channelId} not connected`);
+      return;
+    }
+
+    try {
+      await sock.sendPresenceUpdate('paused', jid);
+      console.log(`⏸️ Stopped typing indicator for ${jid}`);
+    } catch (error) {
+      console.error(`❌ Error stopping typing indicator:`, error);
+      // Don't throw - this is a non-critical operation
+    }
+  }
+  /**
+   * Calculates typing delay based on text length to simulate human typing
+   * Minimum 200ms, scales with text length, max 800ms
+   */
+  private calculateTypingDelay(text: string): number {
+    const minDelay = 200;
+    const maxDelay = 800;
+    // Roughly 25ms per character, simulating ~40 chars/second typing speed
+    const calculatedDelay = Math.min(text.length * 25, maxDelay);
+    return Math.max(calculatedDelay, minDelay);
+  }
+
+  /**
+   * Sends a text message with automatic anti-ban measures
+   * Flow: startTyping → delay based on text length → stopTyping → send
    */
   async sendTextMessage(
     channelId: string,
@@ -1456,6 +1531,17 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
+      // Anti-ban: Start typing indicator
+      await this.startTyping(channelId, to);
+
+      // Anti-ban: Simulate typing delay based on text length
+      const typingDelay = this.calculateTypingDelay(text);
+      console.log(`⏱️ Simulating typing for ${typingDelay}ms (text length: ${text.length})`);
+      await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+      // Anti-ban: Stop typing indicator before sending
+      await this.stopTyping(channelId, to);
+
       // Check if message contains an Instagram URL
       const url = this.extractUrlFromText(text);
       const messageContent: any = { text };
@@ -1478,7 +1564,9 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Sends a media message
+   * Sends a media message with automatic anti-ban measures
+   * Flow for media with caption: startTyping → delay based on caption length → stopTyping → send
+   * Flow for media without caption: just send (no typing needed)
    */
   async sendMediaMessage(
     channelId: string,
@@ -1493,6 +1581,18 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
+      // Anti-ban: Only show typing if there's a caption
+      if (caption) {
+        await this.startTyping(channelId, to);
+
+        // Simulate typing delay based on caption length
+        const typingDelay = this.calculateTypingDelay(caption);
+        console.log(`⏱️ Simulating typing for ${typingDelay}ms (caption length: ${caption.length})`);
+        await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+        await this.stopTyping(channelId, to);
+      }
+
       const messageContent: any = {};
       messageContent[mediaType] = media;
       if (caption) messageContent.caption = caption;
@@ -2098,6 +2198,26 @@ export class WhatsAppService extends EventEmitter {
     }
 
     console.log('Quoted message:', quotedMessage);
+
+    // Anti-ban measures: typing indicator flow
+    // For text: always show typing
+    // For media: only show typing if there's a caption
+    const textForTyping = payload.type === 'text'
+      ? payload.text.body
+      : payload[payload.type]?.caption;
+
+    if (textForTyping) {
+      // Start typing indicator
+      await this.startTyping(channelId, to);
+
+      // Simulate typing delay based on text length
+      const typingDelay = this.calculateTypingDelay(textForTyping);
+      console.log(`⏱️ Simulating typing for ${typingDelay}ms (text length: ${textForTyping.length})`);
+      await new Promise(resolve => setTimeout(resolve, typingDelay));
+
+      // Stop typing before sending
+      await this.stopTyping(channelId, to);
+    }
 
     try {
       let message;
