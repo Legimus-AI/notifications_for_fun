@@ -639,7 +639,7 @@ class WhatsAppController {
       const { channelId } = req.params;
       let { jid } = req.params;
       jid = formatJid(jid);
-      
+
       let finalJid = jid;
       // If this is a LID, try to resolve it to a phone number
       if (jid.includes('@lid')) {
@@ -653,7 +653,7 @@ class WhatsAppController {
           console.warn(`⚠️ Error resolving LID ${jid}:`, lidError);
         }
       }
-      
+
       const result = await whatsAppService.checkIdExists(channelId, finalJid);
       res.status(200).json({
         ok: true,
@@ -672,7 +672,7 @@ class WhatsAppController {
       const { channelId } = req.params;
       let { jid } = req.params;
       jid = formatJid(jid);
-      
+
       let finalJid = jid;
       // If this is a LID, try to resolve it to a phone number
       if (jid.includes('@lid')) {
@@ -686,7 +686,7 @@ class WhatsAppController {
           console.warn(`⚠️ Error resolving LID ${jid}:`, lidError);
         }
       }
-      
+
       const result = await whatsAppService.fetchContactStatus(channelId, finalJid);
       if (result) {
         res.status(200).json({
