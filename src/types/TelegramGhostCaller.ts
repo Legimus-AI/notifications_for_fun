@@ -11,7 +11,21 @@ export interface TelegramGhostCallerMessage {
   text: string;
 }
 
+export interface TelegramGhostCallerSoundAlert {
+  recipient: string; // Username or phone number
+  message?: string; // Optional text message with mention
+  soundFile?: string; // Path to sound file (default: alert.ogg)
+  duration?: number; // Duration in seconds (default: 2)
+}
+
 export interface TelegramGhostCallerMessageResponse {
+  success: boolean;
+  messageId?: number;
+  date?: number;
+  error?: string;
+}
+
+export interface TelegramGhostCallerSoundAlertResponse {
   success: boolean;
   messageId?: number;
   date?: number;

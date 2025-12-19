@@ -128,6 +128,42 @@ class TelegramGhostCallerController {
   };
 
   /**
+   * Sends an aggressive sound alert (voice note) to bypass silent notifications
+   */
+  public sendSoundAlert = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const { recipient, message, soundFile, duration } = req.body;
+
+      if (!recipient) {
+        return utils.handleError(res, utils.buildErrObject(400, 'RECIPIENT_REQUIRED'));
+      }
+
+      const result = await telegramGhostCallerService.sendSoundAlert(channelId, {
+        recipient,
+        message,
+        soundFile,
+        duration,
+      });
+
+      if (!result.success) {
+        return utils.handleError(res, utils.buildErrObject(500, result.error || 'Failed to send sound alert'));
+      }
+
+      res.status(200).json({
+        ok: true,
+        message: 'Sound alert sent successfully',
+        payload: {
+          messageId: result.messageId,
+          date: result.date,
+        },
+      });
+    } catch (error) {
+      utils.handleError(res, error);
+    }
+  };
+
+  /**
    * Sends a message through Telegram Ghost Caller
    */
   public sendMessage = async (req: Request, res: Response): Promise<void> => {

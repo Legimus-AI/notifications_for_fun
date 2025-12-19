@@ -7,10 +7,14 @@ import {
   TelegramGhostCallerConfig,
   TelegramGhostCallerMessage,
   TelegramGhostCallerMessageResponse,
+  TelegramGhostCallerSoundAlert,
+  TelegramGhostCallerSoundAlertResponse,
   TelegramGhostCallerCallRequest,
   TelegramGhostCallerCallResponse,
   TelegramGhostCallerSessionResponse,
 } from '../types/TelegramGhostCaller';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface ActiveClient {
   client: TelegramClient;
@@ -96,7 +100,17 @@ export class TelegramGhostCallerService {
     try {
       const config = await this.getChannelConfig(channelId);
 
-      // If we already have a session, try to connect with it
+      // Check if we already have an active client
+      const existingClient = this.clients.get(channelId);
+      if (existingClient && existingClient.connected) {
+        return {
+          success: true,
+          status: 'connected',
+          message: 'Already connected and authenticated',
+        };
+      }
+
+      // If we have a session string but no active client, try to connect
       if (config.stringSession) {
         const stringSession = new StringSession(config.stringSession);
         const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
@@ -111,7 +125,7 @@ export class TelegramGhostCallerService {
           return {
             success: true,
             status: 'connected',
-            message: 'Already connected with existing session',
+            message: 'Connected with existing session',
           };
         }
       }
@@ -250,6 +264,78 @@ export class TelegramGhostCallerService {
         success: false,
         status: 'error',
         message: error.message,
+      };
+    }
+  }
+
+  /**
+   * Sends an aggressive sound alert (voice note) to bypass silent notifications
+   */
+  async sendSoundAlert(
+    channelId: string,
+    alert: TelegramGhostCallerSoundAlert
+  ): Promise<TelegramGhostCallerSoundAlertResponse> {
+    try {
+      const client = await this.getClient(channelId);
+
+      // Get the entity (user) to send alert to
+      const entity = await client.getEntity(alert.recipient);
+
+      // Default sound file path
+      const soundFile = alert.soundFile || path.join(process.cwd(), 'alert.ogg');
+
+      // Check if sound file exists
+      if (!fs.existsSync(soundFile)) {
+        console.error(`❌ Sound file not found: ${soundFile}`);
+        return {
+          success: false,
+          error: `Sound file not found: ${soundFile}`,
+        };
+      }
+
+      console.log(`🔊 Sending aggressive sound alert to ${alert.recipient}...`);
+
+      // Prepare message with mention if provided
+      const message = alert.message
+        ? alert.message.includes('@')
+          ? alert.message
+          : `@${alert.recipient} ${alert.message}`
+        : `@${alert.recipient} ⚠️ ALERTA DE SISTEMA`;
+
+      // Send voice note with aggressive attributes
+      const result = await client.sendMessage(entity, {
+        message: message,
+        file: soundFile,
+        voiceNote: true, // Key: converts to voice note (PTT)
+        attributes: [
+          new Api.DocumentAttributeAudio({
+            voice: true, // Indicates it's voice
+            duration: alert.duration || 2, // Duration in seconds
+            waveform: Buffer.from(Array(100).fill(255)) // Visual waveform (noise)
+          })
+        ],
+      });
+
+      console.log(`✅ Aggressive sound alert sent to ${alert.recipient}`);
+
+      return {
+        success: true,
+        messageId: result.id,
+        date: result.date,
+      };
+    } catch (error: any) {
+      console.error(`❌ Error sending sound alert:`, error);
+
+      if (error.errorMessage === 'USER_PRIVACY_RESTRICTED') {
+        return {
+          success: false,
+          error: 'User has restricted messages. They need to allow messages from this account.',
+        };
+      }
+
+      return {
+        success: false,
+        error: error.message,
       };
     }
   }
@@ -401,6 +487,14 @@ export class TelegramGhostCallerService {
       for (const channel of channels) {
         try {
           const config = channel.config as TelegramGhostCallerConfig;
+
+          // Check if client already exists and is connected
+          const existingClient = this.clients.get(channel.channelId);
+          if (existingClient && existingClient.connected) {
+            console.log(`✅ Channel ${channel.name} already connected, skipping restore`);
+            continue;
+          }
+
           if (config.stringSession) {
             const stringSession = new StringSession(config.stringSession);
             const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {

@@ -67,6 +67,13 @@ router.get('/:channelId/status', telegramGhostCallerController.getStatus);
 router.post('/:channelId/send', telegramGhostCallerController.sendMessage);
 
 /**
+ * @route POST /api/telegram-ghost-caller/:channelId/alert
+ * @desc Send an aggressive sound alert (voice note) to bypass silent notifications
+ * @access Public
+ */
+router.post('/:channelId/alert', telegramGhostCallerController.sendSoundAlert);
+
+/**
  * @route POST /api/telegram-ghost-caller/:channelId/call
  * @desc Initiate a ghost call (VoIP call that rings but doesn't connect audio)
  * @access Public
