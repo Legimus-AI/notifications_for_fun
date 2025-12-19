@@ -303,9 +303,9 @@ export class TelegramGhostCallerService {
         : `@${alert.recipient} ⚠️ ALERTA DE SISTEMA`;
 
       // Send voice note with aggressive attributes
-      const result = await client.sendMessage(entity, {
-        message: message,
+      const result = await client.sendFile(entity, {
         file: soundFile,
+        caption: message,
         voiceNote: true, // Key: converts to voice note (PTT)
         attributes: [
           new Api.DocumentAttributeAudio({
