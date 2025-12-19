@@ -64,6 +64,7 @@
     "helmet": "^7.0.0",
     "i": "^0.3.7",
     "i18n": "^0.15.1",
+    "input": "^1.0.1",
     "jsonwebtoken": "^9.0.2",
     "link-preview-js": "^3.1.0",
     "mongoose": "^7.8.7",
@@ -79,6 +80,7 @@
     "qrcode": "^1.5.4",
     "request-ip": "^3.3.0",
     "socket.io": "^4.8.1",
+    "telegram": "^2.26.22",
     "trim-request": "^1.0.6",
     "uuid": "^9.0.1",
     "validator": "^13.15.15"

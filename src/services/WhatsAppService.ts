@@ -1448,7 +1448,7 @@ export class WhatsAppService extends EventEmitter {
    */
   async markAsRead(
     channelId: string,
-    messageKeys: { remoteJid: string; id: string; participant?: string }[],
+    messageKeys: { remoteJid: string; id: string; fromMe?: boolean; participant?: string }[],
   ): Promise<void> {
     const sock = this.connections.get(channelId);
     if (!sock) {
@@ -1518,12 +1518,13 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Sends a text message with automatic anti-ban measures
-   * Flow: startTyping → delay based on text length → stopTyping → send
+   * Flow: markAsRead → startTyping → delay based on text length → stopTyping → send
    */
   async sendTextMessage(
     channelId: string,
     to: string,
     text: string,
+    replyToMessage?: { remoteJid: string; id: string; fromMe?: boolean; participant?: string },
   ): Promise<any> {
     const sock = this.connections.get(channelId);
     if (!sock) {
@@ -1531,6 +1532,11 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
+      // Anti-ban: Mark the original message as read first (send "seen")
+      if (replyToMessage) {
+        await this.markAsRead(channelId, [replyToMessage]);
+      }
+
       // Anti-ban: Start typing indicator
       await this.startTyping(channelId, to);
 
@@ -1565,8 +1571,8 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Sends a media message with automatic anti-ban measures
-   * Flow for media with caption: startTyping → delay based on caption length → stopTyping → send
-   * Flow for media without caption: just send (no typing needed)
+   * Flow for media with caption: markAsRead → startTyping → delay based on caption length → stopTyping → send
+   * Flow for media without caption: markAsRead → send
    */
   async sendMediaMessage(
     channelId: string,
@@ -1574,6 +1580,7 @@ export class WhatsAppService extends EventEmitter {
     mediaType: 'image' | 'video' | 'audio' | 'document',
     media: Buffer | string,
     caption?: string,
+    replyToMessage?: { remoteJid: string; id: string; fromMe?: boolean; participant?: string },
   ): Promise<any> {
     const sock = this.connections.get(channelId);
     if (!sock) {
@@ -1581,6 +1588,11 @@ export class WhatsAppService extends EventEmitter {
     }
 
     try {
+      // Anti-ban: Mark the original message as read first (send "seen")
+      if (replyToMessage) {
+        await this.markAsRead(channelId, [replyToMessage]);
+      }
+
       // Anti-ban: Only show typing if there's a caption
       if (caption) {
         await this.startTyping(channelId, to);
@@ -2198,6 +2210,18 @@ export class WhatsAppService extends EventEmitter {
     }
 
     console.log('Quoted message:', quotedMessage);
+
+    // Anti-ban: Mark the original message as read first (send "seen")
+    if (quotedMessage) {
+      await this.markAsRead(channelId, [
+        {
+          remoteJid: quotedMessage.key.remoteJid,
+          id: quotedMessage.key.id,
+          fromMe: quotedMessage.key.fromMe,
+          participant: quotedMessage.key.participant,
+        },
+      ]);
+    }
 
     // Anti-ban measures: typing indicator flow
     // For text: always show typing

@@ -17,6 +17,7 @@ import { whatsAppService } from './services/WhatsAppService';
 import { slackService } from './services/SlackService';
 import { telegramService } from './services/TelegramService';
 import { telegramPhonesService } from './services/TelegramPhonesService';
+import { telegramGhostCallerService } from './services/TelegramGhostCallerService';
 import { fileCleanupService } from './services/api/FileCleanupService';
 import {
   startWhatsAppHealthCheck,
@@ -188,6 +189,7 @@ const startServer = async () => {
       console.log(`💬 Slack service ready`);
       console.log(`📲 Telegram service ready`);
       console.log(`📞 Telegram Phones service ready`);
+      console.log(`👻 Telegram Ghost Caller service ready`);
       console.log(
         `🔌 Socket.io server ready on ws:// ${process.env.BACKEND_DOMAIN}:${port}/socket.io/`,
       );
@@ -209,7 +211,7 @@ const startServer = async () => {
 
     // Restore active Telegram channels
     console.log('🔄 Restoring active Telegram channels...');
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_WHATSAPP === 'true') {
       await telegramService.restoreActiveChannels();
     }
     console.log('✅ Telegram channels restoration completed');
@@ -220,6 +222,13 @@ const startServer = async () => {
       await telegramPhonesService.restoreActiveChannels();
     }
     console.log('✅ Telegram Phones channels restoration completed');
+
+    // Restore active Telegram Ghost Caller channels
+    console.log('🔄 Restoring active Telegram Ghost Caller channels...');
+    if (process.env.NODE_ENV === 'production') {
+      await telegramGhostCallerService.restoreActiveChannels();
+    }
+    console.log('✅ Telegram Ghost Caller channels restoration completed');
 
     // Start file cleanup service
     console.log('🔄 Starting file cleanup service...');

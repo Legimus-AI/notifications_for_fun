@@ -1,0 +1,451 @@
+import { TelegramClient, Api } from 'telegram';
+import { StringSession } from 'telegram/sessions';
+import { computeCheck } from 'telegram/Password';
+import * as crypto from 'crypto';
+import Channel from '../models/Channels';
+import {
+  TelegramGhostCallerConfig,
+  TelegramGhostCallerMessage,
+  TelegramGhostCallerMessageResponse,
+  TelegramGhostCallerCallRequest,
+  TelegramGhostCallerCallResponse,
+  TelegramGhostCallerSessionResponse,
+} from '../types/TelegramGhostCaller';
+
+interface ActiveClient {
+  client: TelegramClient;
+  channelId: string;
+  connected: boolean;
+}
+
+interface PendingAuth {
+  client: TelegramClient;
+  phoneCodeHash: string;
+  phoneNumber: string;
+}
+
+export class TelegramGhostCallerService {
+  private clients: Map<string, ActiveClient> = new Map();
+  private pendingAuths: Map<string, PendingAuth> = new Map();
+
+  /**
+   * Gets channel config from database
+   */
+  private async getChannelConfig(channelId: string): Promise<TelegramGhostCallerConfig> {
+    const channel = await Channel.findOne({ channelId });
+    if (!channel) {
+      throw new Error(`Channel ${channelId} not found`);
+    }
+
+    const config = channel.config as TelegramGhostCallerConfig;
+    if (!config.apiId || !config.apiHash || !config.phoneNumber) {
+      throw new Error('Invalid channel configuration: apiId, apiHash, and phoneNumber are required');
+    }
+
+    return config;
+  }
+
+  /**
+   * Updates the string session in the database
+   */
+  private async updateStringSession(channelId: string, stringSession: string): Promise<void> {
+    await Channel.updateOne(
+      { channelId },
+      { $set: { 'config.stringSession': stringSession } }
+    );
+  }
+
+  /**
+   * Gets or creates a Telegram client for a channel
+   */
+  private async getClient(channelId: string): Promise<TelegramClient> {
+    const existing = this.clients.get(channelId);
+    if (existing?.connected) {
+      return existing.client;
+    }
+
+    const config = await this.getChannelConfig(channelId);
+    const stringSession = new StringSession(config.stringSession || '');
+
+    const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
+      connectionRetries: 5,
+    });
+
+    await client.connect();
+
+    // Check if already authorized
+    const isAuthorized = await client.isUserAuthorized();
+    if (!isAuthorized) {
+      throw new Error('Client not authorized. Please initiate login first.');
+    }
+
+    this.clients.set(channelId, {
+      client,
+      channelId,
+      connected: true,
+    });
+
+    return client;
+  }
+
+  /**
+   * Step 1: Initiates login - sends verification code to phone
+   * Returns awaiting_code status if code was sent successfully
+   */
+  async initiateLogin(channelId: string): Promise<TelegramGhostCallerSessionResponse> {
+    try {
+      const config = await this.getChannelConfig(channelId);
+
+      // If we already have a session, try to connect with it
+      if (config.stringSession) {
+        const stringSession = new StringSession(config.stringSession);
+        const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
+          connectionRetries: 5,
+        });
+
+        await client.connect();
+        const isAuthorized = await client.isUserAuthorized();
+
+        if (isAuthorized) {
+          this.clients.set(channelId, { client, channelId, connected: true });
+          return {
+            success: true,
+            status: 'connected',
+            message: 'Already connected with existing session',
+          };
+        }
+      }
+
+      // Need to start fresh login - send verification code
+      const stringSession = new StringSession('');
+      const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
+        connectionRetries: 5,
+      });
+
+      await client.connect();
+
+      console.log(`🔄 Sending verification code to ${config.phoneNumber}...`);
+
+      // Send code and get phoneCodeHash
+      const result = await client.sendCode(
+        { apiId: config.apiId, apiHash: config.apiHash },
+        config.phoneNumber
+      );
+
+      // Store the pending auth with phoneCodeHash for step 2
+      this.pendingAuths.set(channelId, {
+        client,
+        phoneCodeHash: result.phoneCodeHash,
+        phoneNumber: config.phoneNumber,
+      });
+
+      console.log(`✅ Verification code sent to ${config.phoneNumber}`);
+
+      return {
+        success: true,
+        status: 'awaiting_code',
+        message: `Verification code sent to ${config.phoneNumber}. Use /verify endpoint with phoneCode.`,
+      };
+    } catch (error: any) {
+      console.error(`❌ Error initiating login:`, error);
+      return {
+        success: false,
+        status: 'error',
+        message: error.message,
+      };
+    }
+  }
+
+  /**
+   * Step 2: Completes login with verification code (and optional 2FA password)
+   */
+  async completeLogin(
+    channelId: string,
+    phoneCode: string,
+    password?: string
+  ): Promise<TelegramGhostCallerSessionResponse> {
+    try {
+      const pending = this.pendingAuths.get(channelId);
+
+      if (!pending) {
+        return {
+          success: false,
+          status: 'error',
+          message: 'No pending authentication. Please call /login first to get a verification code.',
+        };
+      }
+
+      const { client, phoneCodeHash, phoneNumber } = pending;
+      const config = await this.getChannelConfig(channelId);
+
+      try {
+        // Try to sign in with the code
+        console.log(`🔐 Attempting sign in with code for ${phoneNumber}...`);
+        await client.invoke(
+          new Api.auth.SignIn({
+            phoneNumber: phoneNumber,
+            phoneCodeHash: phoneCodeHash,
+            phoneCode: phoneCode,
+          })
+        );
+      } catch (signInError: any) {
+        // Check if 2FA is required
+        if (signInError.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+          // Get password from request or config
+          const pwd = password || config.password2FA;
+
+          if (!pwd) {
+            return {
+              success: true,
+              status: 'awaiting_password',
+              message: 'Two-factor authentication required. Please provide password.',
+            };
+          }
+
+          console.log('🔐 2FA required, signing in with password...');
+
+          // Get password info and sign in with 2FA
+          const passwordInfo = await client.invoke(new Api.account.GetPassword());
+          await client.invoke(
+            new Api.auth.CheckPassword({
+              password: await computeCheck(passwordInfo, pwd),
+            })
+          );
+        } else {
+          throw signInError;
+        }
+      }
+
+      // Save the session
+      const sessionString = client.session.save() as unknown as string;
+      await this.updateStringSession(channelId, sessionString);
+
+      // Store the connected client
+      this.clients.set(channelId, { client, channelId, connected: true });
+      this.pendingAuths.delete(channelId);
+
+      console.log(`✅ Channel ${channelId} authenticated successfully!`);
+
+      return {
+        success: true,
+        status: 'connected',
+        stringSession: sessionString,
+        message: 'Successfully authenticated!',
+      };
+    } catch (error: any) {
+      console.error(`❌ Error completing login:`, error);
+
+      // Don't delete pending auth on PHONE_CODE_INVALID - let user retry
+      if (error.errorMessage === 'PHONE_CODE_INVALID') {
+        return {
+          success: false,
+          status: 'error',
+          message: 'Invalid verification code. Please check and try again.',
+        };
+      }
+
+      // For other errors, clean up pending auth
+      this.pendingAuths.delete(channelId);
+      return {
+        success: false,
+        status: 'error',
+        message: error.message,
+      };
+    }
+  }
+
+  /**
+   * Sends a message to a Telegram user
+   */
+  async sendMessage(
+    channelId: string,
+    message: TelegramGhostCallerMessage
+  ): Promise<TelegramGhostCallerMessageResponse> {
+    try {
+      const client = await this.getClient(channelId);
+
+      // Get the entity (user) to send message to
+      const entity = await client.getEntity(message.recipient);
+
+      // Send the message
+      const result = await client.sendMessage(entity, { message: message.text });
+
+      return {
+        success: true,
+        messageId: result.id,
+        date: result.date,
+      };
+    } catch (error: any) {
+      console.error(`❌ Error sending message:`, error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Initiates a ghost call (VoIP call with fake crypto that rings but doesn't connect audio)
+   */
+  async initiateGhostCall(
+    channelId: string,
+    callRequest: TelegramGhostCallerCallRequest
+  ): Promise<TelegramGhostCallerCallResponse> {
+    try {
+      const client = await this.getClient(channelId);
+
+      // Get the entity (user) to call
+      const entity = await client.getEntity(callRequest.recipient);
+
+      if (!entity) {
+        return {
+          success: false,
+          status: 'user_not_found',
+          message: `User ${callRequest.recipient} not found`,
+        };
+      }
+
+      // TRICK: Send wake-up message first (helps iOS devices receive the call)
+      let wakeUpMessageSent = false;
+      if (callRequest.wakeUpMessage) {
+        try {
+          await client.sendMessage(entity, { message: callRequest.wakeUpMessage });
+          wakeUpMessageSent = true;
+          // Wait 500ms for the push notification to wake up the device
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        } catch (msgError) {
+          console.warn('Failed to send wake-up message:', msgError);
+        }
+      }
+
+      // Generate fake cryptographic hash (256 bytes random -> SHA-256 = 32 bytes)
+      const fakeGA = crypto.randomBytes(256);
+      const gAHash = crypto.createHash('sha256').update(fakeGA).digest();
+
+      // Phone call protocol
+      const protocol = new Api.PhoneCallProtocol({
+        minLayer: 93,
+        maxLayer: 93,
+        udpP2p: true,
+        udpReflector: true,
+        libraryVersions: ['1.0'],
+      });
+
+      // Generate safe 32-bit random ID
+      const randomId = Math.floor(Math.random() * 2147483647);
+
+      // Get InputUser for the call
+      const inputUser = await client.getInputEntity(entity);
+
+      // Invoke the ghost call
+      await client.invoke(
+        new Api.phone.RequestCall({
+          userId: inputUser,
+          randomId: randomId,
+          gAHash: gAHash,
+          protocol: protocol,
+        })
+      );
+
+      return {
+        success: true,
+        status: 'initiated',
+        message: 'Ghost call initiated! The recipient\'s phone should be ringing.',
+        wakeUpMessageSent,
+      };
+    } catch (error: any) {
+      console.error(`❌ Error initiating ghost call:`, error);
+
+      if (error.errorMessage === 'USER_PRIVACY_RESTRICTED') {
+        return {
+          success: false,
+          status: 'privacy_restricted',
+          message: 'User has restricted calls. They need to allow calls from this account.',
+        };
+      }
+
+      return {
+        success: false,
+        status: 'error',
+        message: error.message,
+      };
+    }
+  }
+
+  /**
+   * Disconnects a specific channel's client
+   */
+  async disconnectChannel(channelId: string): Promise<void> {
+    const activeClient = this.clients.get(channelId);
+    if (activeClient) {
+      try {
+        await activeClient.client.disconnect();
+      } catch (error) {
+        console.error(`Error disconnecting channel ${channelId}:`, error);
+      }
+      this.clients.delete(channelId);
+    }
+  }
+
+  /**
+   * Restores active channels on server startup
+   */
+  async restoreActiveChannels(): Promise<void> {
+    try {
+      const channels = await Channel.find({
+        type: 'telegram_ghost_caller',
+        isActive: true,
+        'config.stringSession': { $exists: true, $ne: '' }
+      });
+
+      for (const channel of channels) {
+        try {
+          const config = channel.config as TelegramGhostCallerConfig;
+          if (config.stringSession) {
+            const stringSession = new StringSession(config.stringSession);
+            const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
+              connectionRetries: 5,
+            });
+
+            await client.connect();
+            const isAuthorized = await client.isUserAuthorized();
+
+            if (isAuthorized) {
+              this.clients.set(channel.channelId, {
+                client,
+                channelId: channel.channelId,
+                connected: true,
+              });
+              console.log(`✅ Restored Telegram Ghost Caller channel: ${channel.name}`);
+            }
+          }
+        } catch (error) {
+          console.error(`❌ Failed to restore channel ${channel.channelId}:`, error);
+        }
+      }
+
+      console.log(`✅ Telegram Ghost Caller service ready (${this.clients.size} channels restored)`);
+    } catch (error) {
+      console.error('❌ Error restoring Telegram Ghost Caller channels:', error);
+    }
+  }
+
+  /**
+   * Gets connection status for a channel
+   */
+  async getConnectionStatus(channelId: string): Promise<{ connected: boolean; authorized: boolean }> {
+    const activeClient = this.clients.get(channelId);
+    if (!activeClient) {
+      return { connected: false, authorized: false };
+    }
+
+    try {
+      const authorized = await activeClient.client.isUserAuthorized();
+      return { connected: activeClient.connected, authorized };
+    } catch {
+      return { connected: false, authorized: false };
+    }
+  }
+}
+
+export const telegramGhostCallerService = new TelegramGhostCallerService();

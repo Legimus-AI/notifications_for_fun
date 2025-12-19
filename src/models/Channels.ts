@@ -56,6 +56,14 @@ export interface SlackConfig {
   connectedAt?: Date;
 }
 
+// Telegram Ghost Caller specific config interface (MTProto userbot)
+export interface TelegramGhostCallerConfig {
+  apiId: number;
+  apiHash: string;
+  phoneNumber: string;
+  stringSession?: string; // GramJS session string
+}
+
 export interface IWebhook extends Document {
   url: string;
   events: string[];
@@ -68,7 +76,8 @@ export type ChannelConfig =
   | SmsConfig
   | TelegramConfig
   | TelegramPhonesConfig
-  | SlackConfig;
+  | SlackConfig
+  | TelegramGhostCallerConfig;
 
 export interface IChannel extends Document {
   channelId: string;
@@ -79,7 +88,8 @@ export interface IChannel extends Document {
     | 'sms'
     | 'telegram'
     | 'telegram_phones'
-    | 'slack';
+    | 'slack'
+    | 'telegram_ghost_caller';
   name: string;
   config: ChannelConfig;
   status: string;
@@ -110,10 +120,11 @@ const ChannelSchema = new Schema(
       enum: [
         'whatsapp_automated',
         'email',
-        'sms',  
+        'sms',
         'telegram',
         'telegram_phones',
         'slack',
+        'telegram_ghost_caller',
       ],
       index: true,
     },
@@ -141,6 +152,10 @@ const ChannelSchema = new Schema(
         'ready',
         'failed',
         'pending_verification',
+        // telegram_ghost_caller specific statuses
+        'pending_auth',
+        'awaiting_code',
+        'awaiting_password',
       ],
       default: 'inactive',
     },
