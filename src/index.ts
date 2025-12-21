@@ -236,7 +236,7 @@ const startServer = async () => {
     console.log('✅ File cleanup service started');
 
     // Start WhatsApp health check cron (production only)
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_WHATSAPP === 'true') {
     console.log('🔄 Starting WhatsApp health check cron...');
     startWhatsAppHealthCheck();
     console.log('✅ WhatsApp health check cron started');
