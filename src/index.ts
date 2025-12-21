@@ -43,7 +43,7 @@ process.on('uncaughtException', (error) => {
 });
 
 // Graceful shutdown handling
-const gracefulShutdown = (signal: string) => {
+const gracefulShutdown = async (signal: string) => {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
 
   // Stop file cleanup service
@@ -53,6 +53,10 @@ const gracefulShutdown = (signal: string) => {
   // Stop WhatsApp health check cron
   console.log('🛑 Stopping WhatsApp health check cron...');
   stopWhatsAppHealthCheck();
+
+  // Disconnect Telegram Ghost Caller clients
+  console.log('🛑 Stopping Telegram Ghost Caller...');
+  await telegramGhostCallerService.disconnectAll();
 
   // Close HTTP server
   httpServer.close(() => {
@@ -225,9 +229,7 @@ const startServer = async () => {
 
     // Restore active Telegram Ghost Caller channels
     console.log('🔄 Restoring active Telegram Ghost Caller channels...');
-    if (process.env.NODE_ENV === 'production') {
-      await telegramGhostCallerService.restoreActiveChannels();
-    }
+    await telegramGhostCallerService.restoreActiveChannels();
     console.log('✅ Telegram Ghost Caller channels restoration completed');
 
     // Start file cleanup service

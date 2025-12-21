@@ -31,6 +31,7 @@ interface PendingAuth {
 export class TelegramGhostCallerService {
   private clients: Map<string, ActiveClient> = new Map();
   private pendingAuths: Map<string, PendingAuth> = new Map();
+  private keepAliveIntervals: Map<string, NodeJS.Timeout> = new Map();
 
   /**
    * Gets channel config from database
@@ -61,21 +62,40 @@ export class TelegramGhostCallerService {
 
   /**
    * Gets or creates a Telegram client for a channel
+   * NEVER calls connect() if already connected
    */
   private async getClient(channelId: string): Promise<TelegramClient> {
     const existing = this.clients.get(channelId);
-    if (existing?.connected) {
-      return existing.client;
+
+    // Check if client exists and is truly connected
+    if (existing) {
+      try {
+        // Verify connection is still alive
+        if (existing.client.connected && existing.connected) {
+          return existing.client;
+        }
+      } catch (error) {
+        console.warn(`Client for ${channelId} appears disconnected, removing...`);
+        this.clients.delete(channelId);
+        this.stopKeepAlive(channelId);
+      }
     }
 
     const config = await this.getChannelConfig(channelId);
-    const stringSession = new StringSession(config.stringSession || '');
 
+    if (!config.stringSession) {
+      throw new Error('Client not authorized. Please initiate login first.');
+    }
+
+    const stringSession = new StringSession(config.stringSession);
     const client = new TelegramClient(stringSession, config.apiId, config.apiHash, {
       connectionRetries: 5,
     });
 
-    await client.connect();
+    // Only connect if not already connected
+    if (!client.connected) {
+      await client.connect();
+    }
 
     // Check if already authorized
     const isAuthorized = await client.isUserAuthorized();
@@ -89,7 +109,43 @@ export class TelegramGhostCallerService {
       connected: true,
     });
 
+    // Start keepalive ping
+    this.startKeepAlive(channelId, client);
+
     return client;
+  }
+
+  /**
+   * Starts keepalive ping to prevent session timeout
+   */
+  private startKeepAlive(channelId: string, client: TelegramClient): void {
+    // Clear any existing interval
+    this.stopKeepAlive(channelId);
+
+    // Ping every 30 minutes to keep session alive
+    const interval = setInterval(async () => {
+      try {
+        if (client.connected) {
+          await client.getMe();
+          console.log(`💓 Keepalive ping sent for channel ${channelId}`);
+        }
+      } catch (error) {
+        console.error(`❌ Keepalive ping failed for channel ${channelId}:`, error);
+      }
+    }, 30 * 60 * 1000); // 30 minutes
+
+    this.keepAliveIntervals.set(channelId, interval);
+  }
+
+  /**
+   * Stops keepalive ping for a channel
+   */
+  private stopKeepAlive(channelId: string): void {
+    const interval = this.keepAliveIntervals.get(channelId);
+    if (interval) {
+      clearInterval(interval);
+      this.keepAliveIntervals.delete(channelId);
+    }
   }
 
   /**
@@ -465,12 +521,27 @@ export class TelegramGhostCallerService {
     const activeClient = this.clients.get(channelId);
     if (activeClient) {
       try {
+        this.stopKeepAlive(channelId);
         await activeClient.client.disconnect();
       } catch (error) {
         console.error(`Error disconnecting channel ${channelId}:`, error);
       }
       this.clients.delete(channelId);
     }
+  }
+
+  /**
+   * Disconnects all active clients (for graceful shutdown)
+   */
+  async disconnectAll(): Promise<void> {
+    console.log(`🛑 Disconnecting ${this.clients.size} Telegram Ghost Caller clients...`);
+
+    const disconnectPromises = Array.from(this.clients.keys()).map(channelId =>
+      this.disconnectChannel(channelId)
+    );
+
+    await Promise.all(disconnectPromises);
+    console.log('✅ All Telegram Ghost Caller clients disconnected');
   }
 
   /**
@@ -501,7 +572,11 @@ export class TelegramGhostCallerService {
               connectionRetries: 5,
             });
 
-            await client.connect();
+            // Only connect if not already connected
+            if (!client.connected) {
+              await client.connect();
+            }
+
             const isAuthorized = await client.isUserAuthorized();
 
             if (isAuthorized) {
@@ -510,6 +585,10 @@ export class TelegramGhostCallerService {
                 channelId: channel.channelId,
                 connected: true,
               });
+
+              // Start keepalive ping
+              this.startKeepAlive(channel.channelId, client);
+
               console.log(`✅ Restored Telegram Ghost Caller channel: ${channel.name}`);
             }
           }
