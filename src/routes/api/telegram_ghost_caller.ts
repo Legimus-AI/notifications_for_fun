@@ -76,6 +76,10 @@ router.post('/:channelId/alert', telegramGhostCallerController.sendSoundAlert);
 /**
  * @route POST /api/telegram_ghost_caller/:channelId/call
  * @desc Initiate a ghost call (VoIP call that rings but doesn't connect audio)
+ * @body {string} recipient - Username or phone number to call
+ * @body {string} [wakeUpMessage] - Optional message to send before call
+ * @body {string} [ttsText] - Optional text to convert to speech and send as voice note before call
+ * @body {string} [ttsVoice] - Optional Gemini TTS voice name (default: 'Puck')
  * @access Public
  */
 router.post('/:channelId/call', telegramGhostCallerController.initiateCall);

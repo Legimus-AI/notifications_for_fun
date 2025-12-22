@@ -207,7 +207,7 @@ class TelegramGhostCallerController {
   public initiateCall = async (req: Request, res: Response): Promise<void> => {
     try {
       const { channelId } = req.params;
-      const { recipient, wakeUpMessage } = req.body;
+      const { recipient, wakeUpMessage, ttsText, ttsVoice } = req.body;
 
       if (!recipient) {
         return utils.handleError(res, utils.buildErrObject(400, 'RECIPIENT_REQUIRED'));
@@ -216,6 +216,8 @@ class TelegramGhostCallerController {
       const result = await telegramGhostCallerService.initiateGhostCall(channelId, {
         recipient,
         wakeUpMessage,
+        ttsText,
+        ttsVoice,
       });
 
       res.status(200).json({

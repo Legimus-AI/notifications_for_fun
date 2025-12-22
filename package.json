@@ -45,6 +45,7 @@
     "all": true
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@hapi/boom": "^10.0.1",
     "@types/node-cron": "^3.0.11",
     "@types/qrcode": "^1.5.5",

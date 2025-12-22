@@ -3,6 +3,7 @@ import { StringSession } from 'telegram/sessions';
 import { computeCheck } from 'telegram/Password';
 import * as crypto from 'crypto';
 import bigInt from 'big-integer';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import Channel from '../models/Channels';
 import {
   TelegramGhostCallerConfig,
@@ -146,6 +147,59 @@ export class TelegramGhostCallerService {
     if (interval) {
       clearInterval(interval);
       this.keepAliveIntervals.delete(channelId);
+    }
+  }
+
+  /**
+   * Generates speech from text using Gemini TTS
+   * Returns path to temporary audio file
+   */
+  private async generateTTS(text: string, voiceName: string = 'Puck'): Promise<string> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY environment variable not set');
+    }
+
+    try {
+      console.log(`🎤 Generating TTS audio with Gemini (voice: ${voiceName})...`);
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-tts' });
+
+      // Using type assertion for preview TTS API
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName,
+              },
+            },
+          },
+        } as any,
+      } as any);
+
+      const audioData = result.response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (!audioData) {
+        throw new Error('No audio data received from Gemini');
+      }
+
+      // Save to temporary file
+      const tempDir = path.join(process.cwd(), 'tmp');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+
+      const audioFilePath = path.join(tempDir, `tts_${Date.now()}.wav`);
+      fs.writeFileSync(audioFilePath, Buffer.from(audioData, 'base64'));
+
+      console.log(`✅ TTS audio generated: ${audioFilePath}`);
+      return audioFilePath;
+    } catch (error: any) {
+      console.error(`❌ Error generating TTS:`, error);
+      throw error;
     }
   }
 
@@ -472,11 +526,14 @@ export class TelegramGhostCallerService {
 
   /**
    * Initiates a ghost call (VoIP call with fake crypto that rings but doesn't connect audio)
+   * If ttsText is provided, generates and sends TTS audio before initiating the call
    */
   async initiateGhostCall(
     channelId: string,
     callRequest: TelegramGhostCallerCallRequest
   ): Promise<TelegramGhostCallerCallResponse> {
+    let ttsAudioPath: string | null = null;
+    console.log('📞 Initiating ghost call to', callRequest);
     try {
       const client = await this.getClient(channelId);
 
@@ -501,6 +558,39 @@ export class TelegramGhostCallerService {
           await new Promise((resolve) => setTimeout(resolve, 500));
         } catch (msgError) {
           console.warn('Failed to send wake-up message:', msgError);
+        }
+      }
+
+      // Generate and send TTS audio if requested
+      let ttsAudioSent = false;
+      if (callRequest.ttsText) {
+        try {
+          console.log(`🎤 Generating TTS audio for call...`);
+          ttsAudioPath = await this.generateTTS(
+            callRequest.ttsText,
+            callRequest.ttsVoice || 'Puck'
+          );
+
+          // Send TTS audio as voice note
+          await client.sendFile(entity, {
+            file: ttsAudioPath,
+            voiceNote: true,
+            attributes: [
+              new Api.DocumentAttributeAudio({
+                voice: true,
+                duration: 0,
+                waveform: Buffer.from([]),
+              }),
+            ],
+          });
+
+          ttsAudioSent = true;
+          console.log(`✅ TTS audio sent to ${callRequest.recipient}`);
+
+          // Wait 1 second before initiating call
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (ttsError) {
+          console.error('Failed to generate/send TTS audio:', ttsError);
         }
       }
 
@@ -536,7 +626,9 @@ export class TelegramGhostCallerService {
       return {
         success: true,
         status: 'initiated',
-        message: 'Ghost call initiated! The recipient\'s phone should be ringing.',
+        message: ttsAudioSent
+          ? 'Ghost call initiated with TTS audio! The recipient\'s phone should be ringing.'
+          : 'Ghost call initiated! The recipient\'s phone should be ringing.',
         wakeUpMessageSent,
       };
     } catch (error: any) {
@@ -555,6 +647,16 @@ export class TelegramGhostCallerService {
         status: 'error',
         message: error.message,
       };
+    } finally {
+      // Clean up temporary TTS audio file
+      if (ttsAudioPath && fs.existsSync(ttsAudioPath)) {
+        try {
+          fs.unlinkSync(ttsAudioPath);
+          console.log(`🗑️ Cleaned up TTS audio file: ${ttsAudioPath}`);
+        } catch (cleanupError) {
+          console.warn(`Failed to clean up TTS file: ${cleanupError}`);
+        }
+      }
     }
   }
 

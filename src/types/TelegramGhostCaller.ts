@@ -35,6 +35,8 @@ export interface TelegramGhostCallerSoundAlertResponse {
 export interface TelegramGhostCallerCallRequest {
   recipient: string; // Username or phone number to call
   wakeUpMessage?: string; // Optional message to send before call (wakes up iOS)
+  ttsText?: string; // Optional text to convert to speech and play during call
+  ttsVoice?: string; // Optional voice name (default: 'Puck')
 }
 
 export interface TelegramGhostCallerCallResponse {
