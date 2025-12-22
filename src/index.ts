@@ -56,7 +56,9 @@ const gracefulShutdown = async (signal: string) => {
 
   // Disconnect Telegram Ghost Caller clients
   console.log('🛑 Stopping Telegram Ghost Caller...');
-  await telegramGhostCallerService.disconnectAll();
+  if (process.env.ENABLE_TELEGRAM_GHOST === 'true') {
+    await telegramGhostCallerService.disconnectAll();
+  }
 
   // Close HTTP server
   httpServer.close(() => {
@@ -229,7 +231,9 @@ const startServer = async () => {
 
     // Restore active Telegram Ghost Caller channels
     console.log('🔄 Restoring active Telegram Ghost Caller channels...');
-    await telegramGhostCallerService.restoreActiveChannels();
+    if (process.env.ENABLE_TELEGRAM_GHOST === 'true') {
+      await telegramGhostCallerService.restoreActiveChannels();
+    }
     console.log('✅ Telegram Ghost Caller channels restoration completed');
 
     // Start file cleanup service
