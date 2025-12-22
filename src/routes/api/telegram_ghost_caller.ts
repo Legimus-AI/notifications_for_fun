@@ -4,77 +4,77 @@ import telegramGhostCallerController from '../../controllers/telegramGhostCaller
 const router = Router();
 
 /**
- * @route POST /api/telegram-ghost-caller/channels
+ * @route POST /api/telegram_ghost_caller/channels
  * @desc Create a new Telegram Ghost Caller channel
  * @access Public
  */
 router.post('/channels', telegramGhostCallerController.createChannel);
 
 /**
- * @route GET /api/telegram-ghost-caller/channels
+ * @route GET /api/telegram_ghost_caller/channels
  * @desc List all Telegram Ghost Caller channels
  * @access Public
  */
 router.get('/channels', telegramGhostCallerController.listChannels);
 
 /**
- * @route GET /api/telegram-ghost-caller/channels/:channelId
+ * @route GET /api/telegram_ghost_caller/channels/:channelId
  * @desc Get a specific Telegram Ghost Caller channel
  * @access Public
  */
 router.get('/channels/:channelId', telegramGhostCallerController.getChannel);
 
 /**
- * @route PUT /api/telegram-ghost-caller/channels/:channelId
+ * @route PUT /api/telegram_ghost_caller/channels/:channelId
  * @desc Update a Telegram Ghost Caller channel
  * @access Public
  */
 router.put('/channels/:channelId', telegramGhostCallerController.updateChannel);
 
 /**
- * @route DELETE /api/telegram-ghost-caller/channels/:channelId
+ * @route DELETE /api/telegram_ghost_caller/channels/:channelId
  * @desc Delete a Telegram Ghost Caller channel
  * @access Public
  */
 router.delete('/channels/:channelId', telegramGhostCallerController.deleteChannel);
 
 /**
- * @route POST /api/telegram-ghost-caller/:channelId/login
+ * @route POST /api/telegram_ghost_caller/:channelId/login
  * @desc Initiate login process for authentication
  * @access Public
  */
 router.post('/:channelId/login', telegramGhostCallerController.initiateLogin);
 
 /**
- * @route POST /api/telegram-ghost-caller/:channelId/verify
+ * @route POST /api/telegram_ghost_caller/:channelId/verify
  * @desc Complete login with verification code (and optional 2FA password)
  * @access Public
  */
 router.post('/:channelId/verify', telegramGhostCallerController.completeLogin);
 
 /**
- * @route GET /api/telegram-ghost-caller/:channelId/status
+ * @route GET /api/telegram_ghost_caller/:channelId/status
  * @desc Get connection status for a channel
  * @access Public
  */
 router.get('/:channelId/status', telegramGhostCallerController.getStatus);
 
 /**
- * @route POST /api/telegram-ghost-caller/:channelId/send
+ * @route POST /api/telegram_ghost_caller/:channelId/send
  * @desc Send a message through Telegram Ghost Caller
  * @access Public
  */
 router.post('/:channelId/send', telegramGhostCallerController.sendMessage);
 
 /**
- * @route POST /api/telegram-ghost-caller/:channelId/alert
+ * @route POST /api/telegram_ghost_caller/:channelId/alert
  * @desc Send an aggressive sound alert (voice note) to bypass silent notifications
  * @access Public
  */
 router.post('/:channelId/alert', telegramGhostCallerController.sendSoundAlert);
 
 /**
- * @route POST /api/telegram-ghost-caller/:channelId/call
+ * @route POST /api/telegram_ghost_caller/:channelId/call
  * @desc Initiate a ghost call (VoIP call that rings but doesn't connect audio)
  * @access Public
  */

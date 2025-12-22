@@ -2,6 +2,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { computeCheck } from 'telegram/Password';
 import * as crypto from 'crypto';
+import bigInt from 'big-integer';
 import Channel from '../models/Channels';
 import {
   TelegramGhostCallerConfig,
@@ -145,6 +146,49 @@ export class TelegramGhostCallerService {
     if (interval) {
       clearInterval(interval);
       this.keepAliveIntervals.delete(channelId);
+    }
+  }
+
+  /**
+   * Resolves a recipient (username or phone number) to a Telegram entity
+   * For phone numbers, imports them as a contact first
+   */
+  private async resolveEntity(client: TelegramClient, recipient: string): Promise<any> {
+    try {
+      // If it's a phone number (starts with +), import as contact first
+      if (recipient.startsWith('+')) {
+        console.log(`📞 Importing phone number as contact: ${recipient}`);
+
+        // Import the contact
+        const result = await client.invoke(
+          new Api.contacts.ImportContacts({
+            contacts: [
+              new Api.InputPhoneContact({
+                clientId: bigInt(Math.floor(Math.random() * 9999999)),
+                phone: recipient,
+                firstName: 'Contact',
+                lastName: '',
+              }),
+            ],
+          })
+        );
+
+        // Get the imported user
+        if (result.users && result.users.length > 0) {
+          console.log(`✅ Contact imported successfully`);
+          return result.users[0];
+        }
+
+        // Fallback: try to get entity directly
+        console.log(`⚠️ Contact import returned no users, trying direct lookup...`);
+        return await client.getEntity(recipient);
+      }
+
+      // For usernames, use getEntity directly
+      return await client.getEntity(recipient);
+    } catch (error: any) {
+      console.error(`❌ Error resolving entity for ${recipient}:`, error);
+      throw error;
     }
   }
 
@@ -335,7 +379,7 @@ export class TelegramGhostCallerService {
       const client = await this.getClient(channelId);
 
       // Get the entity (user) to send alert to
-      const entity = await client.getEntity(alert.recipient);
+      const entity = await this.resolveEntity(client, alert.recipient);
 
       // Default sound file path
       const soundFile = alert.soundFile || path.join(process.cwd(), 'alert.ogg');
@@ -407,7 +451,7 @@ export class TelegramGhostCallerService {
       const client = await this.getClient(channelId);
 
       // Get the entity (user) to send message to
-      const entity = await client.getEntity(message.recipient);
+      const entity = await this.resolveEntity(client, message.recipient);
 
       // Send the message
       const result = await client.sendMessage(entity, { message: message.text });
@@ -437,7 +481,7 @@ export class TelegramGhostCallerService {
       const client = await this.getClient(channelId);
 
       // Get the entity (user) to call
-      const entity = await client.getEntity(callRequest.recipient);
+      const entity = await this.resolveEntity(client, callRequest.recipient);
 
       if (!entity) {
         return {
