@@ -648,11 +648,20 @@ export class TelegramGhostCallerService {
       // phone.RequestCall requires InputUser with a valid accessHash.
       // getInputEntity() returns InputPeerUser (fully resolved with accessHash),
       // so we extract userId+accessHash from it to build a proper InputUser.
-      const inputPeer = await client.getInputEntity(entity) as Api.InputPeerUser;
-      console.log(`🔍 entity.id=${entity.id} entity.accessHash=${entity.accessHash} inputPeer=${JSON.stringify(inputPeer)}`);
+      const inputPeer = await client.getInputEntity(entity);
+
+      if (inputPeer.className === 'InputPeerSelf') {
+        return {
+          success: false,
+          status: 'error',
+          message: 'Cannot call yourself. The recipient is the same account as the caller.',
+        };
+      }
+
+      const inputPeerUser = inputPeer as Api.InputPeerUser;
       const inputUser = new Api.InputUser({
-        userId: inputPeer.userId,
-        accessHash: inputPeer.accessHash,
+        userId: inputPeerUser.userId,
+        accessHash: inputPeerUser.accessHash,
       });
 
       // Invoke the ghost call
