@@ -645,8 +645,12 @@ export class TelegramGhostCallerService {
       // Generate safe 32-bit random ID
       const randomId = Math.floor(Math.random() * 2147483647);
 
-      // Get InputUser for the call
-      const inputUser = await client.getInputEntity(entity);
+      // phone.RequestCall requires InputUser (not InputPeerUser from getInputEntity)
+      // Build it explicitly from the resolved entity's userId and accessHash
+      const inputUser = new Api.InputUser({
+        userId: entity.id,
+        accessHash: entity.accessHash,
+      });
 
       // Invoke the ghost call
       await client.invoke(
