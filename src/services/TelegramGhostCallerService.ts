@@ -63,6 +63,44 @@ export class TelegramGhostCallerService {
   }
 
   /**
+   * Connects a client with retry logic for AUTH_KEY_DUPLICATED.
+   * This error occurs when the old process connection is still alive on Telegram's side
+   * after a restart. Waiting and retrying resolves it once the old connection times out.
+   */
+  private async connectWithRetry(
+    client: TelegramClient,
+    channelId: string,
+    retries = 4,
+    delayMs = 5000
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        if (!client.connected) {
+          await client.connect();
+        }
+        // Trigger initial layer negotiation so AUTH_KEY_DUPLICATED surfaces here
+        await client.isUserAuthorized();
+        return;
+      } catch (error: any) {
+        const isDuplicated = error.errorMessage === 'AUTH_KEY_DUPLICATED';
+        if (isDuplicated && attempt < retries) {
+          console.warn(
+            `⚠️ AUTH_KEY_DUPLICATED for channel ${channelId} — old connection still alive. ` +
+            `Retrying in ${delayMs / 1000}s... (attempt ${attempt}/${retries})`
+          );
+          // Destroy the current client before retrying to avoid leaking connections
+          try { await client.destroy(); } catch (_) { /* ignore */ }
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          // Reconnect the same client instance
+          await client.connect();
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+
+  /**
    * Gets or creates a Telegram client for a channel
    * NEVER calls connect() if already connected
    */
@@ -94,12 +132,9 @@ export class TelegramGhostCallerService {
       connectionRetries: 5,
     });
 
-    // Only connect if not already connected
-    if (!client.connected) {
-      await client.connect();
-    }
+    await this.connectWithRetry(client, channelId);
 
-    // Check if already authorized
+    // Authorization was already verified inside connectWithRetry
     const isAuthorized = await client.isUserAuthorized();
     if (!isAuthorized) {
       throw new Error('Client not authorized. Please initiate login first.');
@@ -661,14 +696,16 @@ export class TelegramGhostCallerService {
   }
 
   /**
-   * Disconnects a specific channel's client
+   * Disconnects a specific channel's client.
+   * Uses destroy() for a forceful teardown so Telegram's server-side connection
+   * closes immediately, preventing AUTH_KEY_DUPLICATED on the next startup.
    */
   async disconnectChannel(channelId: string): Promise<void> {
     const activeClient = this.clients.get(channelId);
     if (activeClient) {
       try {
         this.stopKeepAlive(channelId);
-        await activeClient.client.disconnect();
+        await activeClient.client.destroy();
       } catch (error) {
         console.error(`Error disconnecting channel ${channelId}:`, error);
       }
@@ -718,10 +755,8 @@ export class TelegramGhostCallerService {
               connectionRetries: 5,
             });
 
-            // Only connect if not already connected
-            if (!client.connected) {
-              await client.connect();
-            }
+            // connectWithRetry handles AUTH_KEY_DUPLICATED from previous process
+            await this.connectWithRetry(client, channel.channelId);
 
             const isAuthorized = await client.isUserAuthorized();
 
