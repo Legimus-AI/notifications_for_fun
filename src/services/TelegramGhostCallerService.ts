@@ -649,6 +649,7 @@ export class TelegramGhostCallerService {
       // getInputEntity() returns InputPeerUser (fully resolved with accessHash),
       // so we extract userId+accessHash from it to build a proper InputUser.
       const inputPeer = await client.getInputEntity(entity) as Api.InputPeerUser;
+      console.log(`🔍 entity.id=${entity.id} entity.accessHash=${entity.accessHash} inputPeer=${JSON.stringify(inputPeer)}`);
       const inputUser = new Api.InputUser({
         userId: inputPeer.userId,
         accessHash: inputPeer.accessHash,
