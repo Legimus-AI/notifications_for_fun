@@ -120,9 +120,25 @@ class TelegramController {
   ): Promise<void> => {
     try {
       const { channelId } = req.params;
+      const payload = req.body ?? {};
+      // Pre-validate so AI agents get a 400 with a clear field name instead
+      // of a generic "Cannot read property of undefined" 500. Mirrors the
+      // WhatsApp controller's contract.
+      if (!payload.to && !payload.chat_id) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'Parameter "to" (or "chat_id") is required'),
+        );
+      }
+      if (!payload.type) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'Parameter "type" is required'),
+        );
+      }
       const result = await telegramService.sendMessageFromApi(
         channelId,
-        req.body,
+        payload,
       );
       const sentMessage = result.result ?? {};
       res.status(200).json({

@@ -28,18 +28,21 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
-import { decodeBase64Payload } from '../helpers/media';
+import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
 
 /**
  * Resolve a media payload into a Baileys-compatible source.
  * Accepts `{link: string}` (URL fetch by Baileys) or `{data: string}` (base64).
+ *
+ * URLs are SSRF-validated before being handed to Baileys (which fetches
+ * server-side). base64 is size-capped — see helpers/media.ts.
  */
 function resolveMediaSource(
   mediaPayload: any,
   typeLabel: string,
 ): { url: string } | Buffer {
   if (mediaPayload?.link) {
-    return { url: mediaPayload.link };
+    return { url: assertSafeMediaUrl(mediaPayload.link) };
   }
   if (mediaPayload?.data) {
     return decodeBase64Payload(mediaPayload.data);
@@ -51,10 +54,14 @@ function resolveMediaSource(
  * Build a vCard 3.0 string from a contact payload (Cloud API shape).
  */
 function buildVCard(contact: any): string {
+  // NOTE: `??` falls back only on null/undefined, but `[].filter(Boolean).join(' ')`
+  // returns `''` when both names are missing — empty string is NOT nullish, so the
+  // final `?? 'Contact'` would never fire. Coalesce empty string explicitly.
+  const composedName = [contact?.name?.first_name, contact?.name?.last_name]
+    .filter(Boolean)
+    .join(' ');
   const fullName =
-    contact?.name?.formatted_name ??
-    [contact?.name?.first_name, contact?.name?.last_name].filter(Boolean).join(' ') ??
-    'Contact';
+    contact?.name?.formatted_name || composedName || 'Contact';
   const phones: string[] = (contact?.phones ?? [])
     .filter((p: any) => p?.phone)
     .map(

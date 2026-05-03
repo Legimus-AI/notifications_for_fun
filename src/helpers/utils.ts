@@ -47,8 +47,13 @@ const handleError = (
     if (err instanceof Error) {
       // Handle plain Error objects
       message = err.message;
-      // Set appropriate status codes based on common error messages
-      if (err.message.includes('channel_not_found')) {
+      // Honor explicit statusCode on Error subclasses (e.g. MediaPayloadError)
+      // BEFORE falling back to string-matching heuristics. This is what lets
+      // 413 surface for oversized base64 instead of being swallowed as 500.
+      const explicitStatus = (err as Error & { statusCode?: unknown }).statusCode;
+      if (typeof explicitStatus === 'number') {
+        statusCode = explicitStatus;
+      } else if (err.message.includes('channel_not_found')) {
         statusCode = 404;
       } else if (err.message.includes('not_authed') || err.message.includes('invalid_auth')) {
         statusCode = 401;

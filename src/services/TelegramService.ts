@@ -4,7 +4,7 @@ import {
   TelegramMessage,
   TelegramMessageResponse,
 } from '../types/Telegram';
-import { decodeBase64Payload } from '../helpers/media';
+import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
 
 /**
  * Default HTTP timeouts for Telegram Bot API calls (ms).
@@ -36,7 +36,10 @@ function resolveMediaSource(
   typeLabel: string,
 ): { kind: 'url'; value: string } | { kind: 'blob'; value: Blob; filename: string } {
   if (mediaPayload?.link) {
-    return { kind: 'url', value: mediaPayload.link };
+    // SSRF guard: Telegram fetches this URL server-side from its
+    // infrastructure — even if Telegram itself filters, we should
+    // refuse to forward obviously bad inputs to a public API.
+    return { kind: 'url', value: assertSafeMediaUrl(mediaPayload.link) };
   }
   if (mediaPayload?.data) {
     const buffer = decodeBase64Payload(mediaPayload.data);
@@ -204,15 +207,22 @@ export class TelegramService {
             parse_mode: mediaPayload?.parse_mode,
             reply_to_message_id: payload.context?.message_id,
           };
-          if (payload.type === 'document' && mediaPayload?.filename) {
-            baseFields.filename = mediaPayload.filename;
-          }
           if (source.kind === 'url') {
+            // Telegram Bot API has NO top-level `filename` field for
+            // sendDocument when sending by URL/file_id. The filename is
+            // derived from the URL basename. If a custom filename is
+            // required, the caller must POST base64 via `data` (multipart).
             return await this.callApi(botToken, mapping.method, {
               ...baseFields,
               [mapping.field]: source.value,
             });
           }
+          // Multipart: filename IS honored (it becomes the form-data filename).
+          // Prefer the user-supplied document filename for documents.
+          const uploadFilename =
+            payload.type === 'document' && mediaPayload?.filename
+              ? mediaPayload.filename
+              : source.filename;
           return await this.callApiMultipart(
             botToken,
             mapping.method,
@@ -220,7 +230,7 @@ export class TelegramService {
             {
               field: mapping.field,
               blob: source.value,
-              filename: source.filename,
+              filename: uploadFilename,
             },
           );
         }
