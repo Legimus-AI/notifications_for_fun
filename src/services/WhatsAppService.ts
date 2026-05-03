@@ -138,11 +138,11 @@ function buildInteractiveContent(interactive: any): any {
 }
 
 /**
- * Validate that the type-specific required fields are present in `payload`.
- * Throws a precise "X is required for type Y" error early so that malformed
- * payloads are rejected BEFORE we touch the WhatsApp socket. This keeps error
- * messages helpful for AI agents instead of masking them with channel-state
- * errors.
+ * Validate that the type-specific required fields are present in `payload`,
+ * and that any provided media URL is safe (no SSRF). Throws a precise
+ * "X is required for type Y" error early so malformed payloads are rejected
+ * BEFORE we touch the WhatsApp socket — keeps errors helpful for AI agents
+ * and ensures SSRF rejection still fires when the channel is offline.
  */
 function validateMessagePayload(payload: any): void {
   if (!payload?.type) {
@@ -157,19 +157,23 @@ function validateMessagePayload(payload: any): void {
     case 'image':
     case 'video':
     case 'audio':
-    case 'sticker':
-      if (!payload[payload.type]?.link && !payload[payload.type]?.data) {
+    case 'sticker': {
+      const media = payload[payload.type];
+      if (!media?.link && !media?.data) {
         throw new Error(
           `"${payload.type}.link" or "${payload.type}.data" is required for type "${payload.type}"`,
         );
       }
+      if (media.link) assertSafeMediaUrl(media.link);
       return;
+    }
     case 'document':
       if (!payload.document?.link && !payload.document?.data) {
         throw new Error(
           '"document.link" or "document.data" is required for type "document"',
         );
       }
+      if (payload.document.link) assertSafeMediaUrl(payload.document.link);
       return;
     case 'location':
       if (
