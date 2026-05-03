@@ -547,6 +547,10 @@ export class WhatsAppService extends EventEmitter {
         printQRInTerminal: false,
         markOnlineOnConnect: false, // Critical: prevents auto online status
         syncFullHistory: false, // Reduces bandwidth and suspicion
+        // 25s ping is what real WA Web uses; defaults are too aggressive and
+        // make Baileys look bot-like, increasing chance of session rejection
+        // (per Baileys issue #2110 community recommendations).
+        keepAliveIntervalMs: 25_000,
         defaultQueryTimeoutMs: 60000,
         emitOwnEvents: false, // Don't emit events for own messages
         generateHighQualityLinkPreview: true, // Enable large thumbnail link previews
