@@ -54,6 +54,15 @@ const gracefulShutdown = async (signal: string) => {
   console.log('🛑 Stopping WhatsApp health check cron...');
   stopWhatsAppHealthCheck();
 
+  // Cleanly close WhatsApp sockets so WhatsApp frees the device slot.
+  // Without this, the next boot races a still-live ghost socket and
+  // gets <conflict type=replaced> → channels cascade to logged_out and
+  // require QR re-pair. See WhatsAppService.gracefulShutdownAll.
+  if (process.env.ENABLE_WHATSAPP === 'true') {
+    console.log('🛑 Closing WhatsApp sockets cleanly...');
+    await whatsAppService.gracefulShutdownAll();
+  }
+
   // Disconnect Telegram Ghost Caller clients
   console.log('🛑 Stopping Telegram Ghost Caller...');
   if (process.env.ENABLE_TELEGRAM_GHOST === 'true') {
@@ -66,13 +75,13 @@ const gracefulShutdown = async (signal: string) => {
     process.exit(0);
   });
 
-  // Force exit after 10 seconds
+  // Force exit after 15 seconds (gives WhatsApp socket close time to land)
   setTimeout(() => {
     console.error(
       '❌ Could not close connections in time, forcefully shutting down',
     );
     process.exit(1);
-  }, 10000);
+  }, 15000);
 };
 
 // Listen for termination signals

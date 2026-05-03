@@ -255,6 +255,46 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Restores all active channels on server restart
    */
+  /**
+   * Cleanly close every active WhatsApp socket without invalidating auth.
+   *
+   * WHY this exists: PM2 restart sends SIGTERM, we kill the process within
+   * ~1.6s. If the WhatsApp WebSocket is yanked without a graceful close,
+   * WhatsApp's server keeps the device slot "live" for some seconds. When
+   * the new process boots and connects with the same auth, WhatsApp sees
+   * two sockets from the same device-id and replies with
+   * <conflict type="replaced"/>, cascading the channel into logged_out.
+   *
+   * Calling sock.end(undefined) tells WhatsApp "device intentionally
+   * disconnected, free the slot" — auth stays valid, next boot reconnects
+   * cleanly with no QR re-pair needed. This is what makes deploys
+   * production-grade for clients.
+   */
+  async gracefulShutdownAll(): Promise<void> {
+    const channelIds = Array.from(this.connections.keys());
+    if (channelIds.length === 0) {
+      console.log('⏭️ No active WhatsApp sockets to close');
+      return;
+    }
+    console.log(
+      `🔌 Gracefully closing ${channelIds.length} WhatsApp socket(s) before shutdown`,
+    );
+    await Promise.allSettled(
+      channelIds.map(async (channelId) => {
+        const sock = this.connections.get(channelId);
+        if (!sock) return;
+        try {
+          this.connections.delete(channelId);
+          this.connectionStatus.set(channelId, 'shutting_down');
+          sock.end(undefined);
+          console.log(`✅ Socket closed cleanly for ${channelId}`);
+        } catch (error) {
+          console.warn(`⚠️ Error closing socket for ${channelId}:`, error);
+        }
+      }),
+    );
+  }
+
   async restoreActiveChannels(): Promise<void> {
     try {
       console.log('🔄 Restoring active WhatsApp channels...');
