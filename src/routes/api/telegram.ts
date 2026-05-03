@@ -20,5 +20,10 @@ router.post(
   telegramController.sendMessage,
 );
 
+router.post(
+  '/channels/:channelId/messages',
+  telegramController.sendMessageFromApi,
+);
+
 export default router;
 

@@ -29,6 +29,109 @@ import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 
+/**
+ * Resolve a media payload into a Baileys-compatible source.
+ * Accepts `{link: string}` (URL fetch by Baileys) or `{data: string}` (base64).
+ */
+function resolveMediaSource(
+  mediaPayload: any,
+  typeLabel: string,
+): { url: string } | Buffer {
+  if (mediaPayload?.link) {
+    return { url: mediaPayload.link };
+  }
+  if (mediaPayload?.data) {
+    const base64 = mediaPayload.data.includes(',')
+      ? mediaPayload.data.split(',', 2)[1]
+      : mediaPayload.data;
+    return Buffer.from(base64, 'base64');
+  }
+  throw new Error(`"link" or "data" (base64) is required for media type "${typeLabel}"`);
+}
+
+/**
+ * Build a vCard 3.0 string from a contact payload (Cloud API shape).
+ */
+function buildVCard(contact: any): string {
+  const fullName =
+    contact?.name?.formatted_name ??
+    [contact?.name?.first_name, contact?.name?.last_name].filter(Boolean).join(' ') ??
+    'Contact';
+  const phones: string[] = (contact?.phones ?? [])
+    .filter((p: any) => p?.phone)
+    .map(
+      (p: any) =>
+        `TEL;type=${(p.type ?? 'CELL').toUpperCase()};waid=${p.wa_id ?? ''}:${p.phone}`,
+    );
+  const emails: string[] = (contact?.emails ?? [])
+    .filter((e: any) => e?.email)
+    .map((e: any) => `EMAIL;type=${(e.type ?? 'WORK').toUpperCase()}:${e.email}`);
+  const org = contact?.org?.company ? `ORG:${contact.org.company}` : null;
+  const lines = [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `FN:${fullName}`,
+    `N:${contact?.name?.last_name ?? ''};${contact?.name?.first_name ?? ''};;;`,
+    org,
+    ...phones,
+    ...emails,
+    'END:VCARD',
+  ].filter(Boolean) as string[];
+  return lines.join('\n');
+}
+
+/**
+ * Build a Baileys interactive message (buttons or list) from Cloud API shape.
+ */
+function buildInteractiveContent(interactive: any): any {
+  if (!interactive?.action) {
+    throw new Error('"interactive.action" is required');
+  }
+  const headerText = interactive?.header?.text;
+  const bodyText = interactive?.body?.text;
+  const footerText = interactive?.footer?.text;
+  if (!bodyText) {
+    throw new Error('"interactive.body.text" is required');
+  }
+
+  if (interactive.type === 'button' && Array.isArray(interactive.action.buttons)) {
+    const buttons = interactive.action.buttons.map((btn: any, index: number) => ({
+      buttonId: btn.reply?.id ?? `btn_${index}`,
+      buttonText: { displayText: btn.reply?.title ?? `Button ${index + 1}` },
+      type: 1,
+    }));
+    return {
+      text: bodyText,
+      footer: footerText,
+      buttons,
+      headerType: 1,
+      ...(headerText ? { caption: headerText } : {}),
+    };
+  }
+
+  if (interactive.type === 'list' && Array.isArray(interactive.action.sections)) {
+    const sections = interactive.action.sections.map((section: any) => ({
+      title: section.title,
+      rows: (section.rows ?? []).map((row: any) => ({
+        title: row.title,
+        rowId: row.id,
+        description: row.description,
+      })),
+    }));
+    return {
+      text: bodyText,
+      footer: footerText,
+      title: headerText,
+      buttonText: interactive.action.button ?? 'Select',
+      sections,
+    };
+  }
+
+  throw new Error(
+    `Unsupported interactive type "${interactive.type}". Use "button" or "list".`,
+  );
+}
+
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
   'pairing-code': (channelId: string, code: string) => void;
@@ -2193,30 +2296,82 @@ export class WhatsAppService extends EventEmitter {
       }
       case 'image':
       case 'video':
-      case 'audio': {
-        const mediaUrl = payload[payload.type].link;
-        const caption = payload[payload.type].caption;
-        if (!mediaUrl) {
-          throw new Error(
-            `"link" is required for media type "${payload.type}"`,
-          );
-        }
+      case 'audio':
+      case 'sticker': {
+        const mediaPayload = payload[payload.type];
+        const mediaSource = resolveMediaSource(mediaPayload, payload.type);
+        const isVoiceNote = payload.type === 'audio' && mediaPayload?.voice === true;
         messageContent = {
-          [payload.type]: { url: mediaUrl },
-          caption: caption,
+          [payload.type]: mediaSource,
+          caption: mediaPayload?.caption,
+          mimetype: mediaPayload?.mime_type ?? (isVoiceNote ? 'audio/ogg; codecs=opus' : undefined),
+          ptt: isVoiceNote || undefined,
         };
         break;
       }
       case 'document': {
         const documentPayload = payload.document;
-        if (!documentPayload || !documentPayload.link) {
-          throw new Error(`"link" is required for document type`);
+        const mediaSource = resolveMediaSource(documentPayload, 'document');
+        messageContent = {
+          document: mediaSource,
+          caption: documentPayload?.caption,
+          fileName: documentPayload?.filename,
+          mimetype: documentPayload?.mime_type,
+        };
+        break;
+      }
+      case 'location': {
+        const loc = payload.location;
+        if (loc?.latitude === undefined || loc?.longitude === undefined) {
+          throw new Error('"latitude" and "longitude" are required for location type');
         }
         messageContent = {
-          document: { url: documentPayload.link },
-          caption: documentPayload.caption,
-          fileName: documentPayload.filename,
+          location: {
+            degreesLatitude: Number(loc.latitude),
+            degreesLongitude: Number(loc.longitude),
+            name: loc.name,
+            address: loc.address,
+          },
         };
+        break;
+      }
+      case 'contacts':
+      case 'contact': {
+        const contacts = payload.contacts ?? [payload.contact];
+        if (!Array.isArray(contacts) || contacts.length === 0) {
+          throw new Error('"contacts" array is required for contact type');
+        }
+        const vcards = contacts.map((c: any) => buildVCard(c));
+        messageContent = {
+          contacts: {
+            displayName: contacts[0]?.name?.formatted_name ?? contacts[0]?.name?.first_name ?? 'Contact',
+            contacts: vcards.map((vcard) => ({ vcard })),
+          },
+        };
+        break;
+      }
+      case 'reaction': {
+        const reaction = payload.reaction;
+        if (!reaction?.message_id) {
+          throw new Error('"message_id" is required for reaction type');
+        }
+        const reactedDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': reaction.message_id,
+        }).sort({ createdAt: -1 });
+        if (!reactedDoc?.payload?.key) {
+          throw new Error(`Cannot react: message ${reaction.message_id} not found`);
+        }
+        messageContent = {
+          react: {
+            text: reaction.emoji ?? '',
+            key: reactedDoc.payload.key,
+          },
+        };
+        break;
+      }
+      case 'interactive': {
+        messageContent = buildInteractiveContent(payload.interactive);
         break;
       }
       default:
@@ -2238,11 +2393,12 @@ export class WhatsAppService extends EventEmitter {
     }
 
     // Anti-ban measures: typing indicator flow
-    // For text: always show typing
-    // For media: only show typing if there's a caption
-    const textForTyping = payload.type === 'text'
-      ? payload.text.body
-      : payload[payload.type]?.caption;
+    // For text: always show typing. For media w/ caption: typing pre-caption.
+    // For reaction/location/contact/interactive: skip typing (no text content).
+    const textForTyping =
+      payload.type === 'text'
+        ? payload.text?.body
+        : payload[payload.type]?.caption;
 
     if (textForTyping) {
       // Start typing indicator

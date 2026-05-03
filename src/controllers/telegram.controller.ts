@@ -111,6 +111,40 @@ class TelegramController {
   };
 
   /**
+   * Unified Cloud-API-style message endpoint. Mirrors WhatsApp
+   * /channels/:id/messages payload shape so AI agents have one schema.
+   */
+  public sendMessageFromApi = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const result = await telegramService.sendMessageFromApi(
+        channelId,
+        req.body,
+      );
+      const sentMessage = result.result ?? {};
+      res.status(200).json({
+        messaging_product: 'telegram',
+        contacts: sentMessage.chat
+          ? [
+              {
+                input: String(sentMessage.chat.id),
+                wa_id: String(sentMessage.chat.id),
+              },
+            ]
+          : [],
+        messages: sentMessage.message_id
+          ? [{ id: String(sentMessage.message_id) }]
+          : [],
+      });
+    } catch (error) {
+      utils.handleError(res, error);
+    }
+  };
+
+  /**
    * Deletes a Telegram channel
    */
   public deleteChannel = async (
