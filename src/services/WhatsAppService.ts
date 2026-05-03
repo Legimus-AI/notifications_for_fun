@@ -274,6 +274,20 @@ export class WhatsAppService extends EventEmitter {
     try {
       console.log(`🔄 Connecting WhatsApp channel: ${channelId}`);
 
+      // WHY: WhatsApp expels sessions with <conflict type="replaced"/> when two
+      // sockets from the same device-id stay connected. Multiple paths can call
+      // connectChannel concurrently (restoration, setTimeout reactive reconnect,
+      // auto-heal cron, /connect endpoint). Without this guard, parallel sockets
+      // race and cascade into permanent logged_out. Always close any existing
+      // socket first, then wait briefly for the close to propagate.
+      if (this.connections.has(channelId)) {
+        console.log(
+          `🔌 Existing socket detected for ${channelId} — resetting before reconnect to avoid <conflict type=replaced>`,
+        );
+        await this.resetSocketConnection(channelId);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
       // Update channel status
       await this.updateChannelStatus(channelId, 'connecting');
 
