@@ -7,11 +7,33 @@ import {
   MAX_CONSECUTIVE_ALERTS,
   HEALTH_CHECK_SCHEDULE,
   HEALTH_CHECK_TIMEZONE,
+  MAX_HEAL_ATTEMPTS,
+  HEAL_RECHECK_DELAY_MS,
+  UNHEALABLE_REASONS,
 } from '../config/healthCheck.config';
+
+type UnhealthyChannel = {
+  channelId: string;
+  phoneNumber?: string;
+  status: string;
+};
 
 // Track alert counts per channel
 // Structure: { channelId: { count: number, lastStatus: string } }
 const alertCounters = new Map<string, { count: number; lastStatus: string }>();
+
+// Track consecutive auto-heal attempts per channel.
+// Resets when channel becomes healthy. Channels above MAX_HEAL_ATTEMPTS
+// stop being auto-healed until they recover or the process restarts.
+const healAttempts = new Map<string, number>();
+
+// Per-channel lock to prevent overlapping connectChannel calls when a heal
+// from a previous cron tick is still running.
+const healInProgress = new Set<string>();
+
+// Re-entrancy guard: a slow tick (heal + recheck) can outlast the 5min cron
+// interval, so block the next tick instead of running them concurrently.
+let isExecutionInProgress = false;
 
 /**
  * Deep check if a WhatsApp connection is truly alive
@@ -76,7 +98,7 @@ const isConnectionAlive = async (
  */
 const checkWhatsAppHealth = async (): Promise<{
   healthy: string[];
-  unhealthy: Array<{ channelId: string; phoneNumber?: string; status: string }>;
+  unhealthy: Array<UnhealthyChannel>;
 }> => {
   try {
     // Get all channels where isActive is true (regardless of current status)
@@ -90,11 +112,7 @@ const checkWhatsAppHealth = async (): Promise<{
     );
 
     const healthy: string[] = [];
-    const unhealthy: Array<{
-      channelId: string;
-      phoneNumber?: string;
-      status: string;
-    }> = [];
+    const unhealthy: Array<UnhealthyChannel> = [];
 
     // Check each channel with deep alive check
     for (const channel of activeChannels) {
@@ -113,12 +131,18 @@ const checkWhatsAppHealth = async (): Promise<{
           `✅ ${channelId} is healthy (phone: ${phoneNumber || 'N/A'})`,
         );
 
-        // Reset alert counter when channel becomes healthy
+        // Reset alert + heal counters when channel becomes healthy
         if (alertCounters.has(channelId)) {
           console.log(
             `🔄 Resetting alert counter for ${channelId} (now healthy)`,
           );
           alertCounters.delete(channelId);
+        }
+        if (healAttempts.has(channelId)) {
+          console.log(
+            `🔄 Resetting heal counter for ${channelId} (now healthy)`,
+          );
+          healAttempts.delete(channelId);
         }
       } else {
         const status = aliveCheck.reason;
@@ -143,13 +167,9 @@ const checkWhatsAppHealth = async (): Promise<{
  * Only includes channels that haven't exceeded the max consecutive alerts
  */
 const filterChannelsForAlert = (
-  unhealthy: Array<{ channelId: string; phoneNumber?: string; status: string }>,
-): Array<{ channelId: string; phoneNumber?: string; status: string }> => {
-  const channelsToAlert: Array<{
-    channelId: string;
-    phoneNumber?: string;
-    status: string;
-  }> = [];
+  unhealthy: Array<UnhealthyChannel>,
+): Array<UnhealthyChannel> => {
+  const channelsToAlert: Array<UnhealthyChannel> = [];
 
   for (const channel of unhealthy) {
     const { channelId, status } = channel;
@@ -187,7 +207,7 @@ let isNotificationInProgress = false;
  * Send notification about unhealthy channels
  */
 const notifyUnhealthyChannels = async (
-  unhealthy: Array<{ channelId: string; phoneNumber?: string; status: string }>,
+  unhealthy: Array<UnhealthyChannel>,
 ): Promise<void> => {
   if (unhealthy.length === 0) {
     return;
@@ -318,13 +338,145 @@ const notifyUnhealthyChannels = async (
 };
 
 /**
- * Execute health check and notify if needed
+ * Re-run isConnectionAlive on a known subset of channels (no Mongo round-trip)
+ */
+const recheckChannels = async (
+  channels: Array<UnhealthyChannel>,
+): Promise<Array<UnhealthyChannel>> => {
+  const stillUnhealthy: Array<UnhealthyChannel> = [];
+  for (const channel of channels) {
+    const { channelId, phoneNumber } = channel;
+    const aliveCheck = await isConnectionAlive(channelId, phoneNumber);
+    if (!aliveCheck.alive) {
+      stillUnhealthy.push({ channelId, phoneNumber, status: aliveCheck.reason });
+    }
+  }
+  return stillUnhealthy;
+};
+
+/**
+ * Try to auto-heal unhealthy channels by triggering connectChannel.
+ * Returns the subset still unhealthy (caller notifies humans about these).
+ */
+const attemptAutoHeal = async (
+  unhealthy: Array<UnhealthyChannel>,
+): Promise<Array<UnhealthyChannel>> => {
+  if (unhealthy.length === 0) {
+    return [];
+  }
+
+  const healable: Array<UnhealthyChannel> = [];
+  const skipped: Array<UnhealthyChannel> = [];
+
+  for (const channel of unhealthy) {
+    const { channelId, status } = channel;
+
+    if (UNHEALABLE_REASONS.includes(status)) {
+      console.log(
+        `⏭️ ${channelId}: skipping auto-heal (reason "${status}" requires human action)`,
+      );
+      skipped.push(channel);
+      continue;
+    }
+
+    const previousAttempts = healAttempts.get(channelId) ?? 0;
+    if (previousAttempts >= MAX_HEAL_ATTEMPTS) {
+      console.log(
+        `⏭️ ${channelId}: skipping auto-heal (max ${MAX_HEAL_ATTEMPTS} attempts reached)`,
+      );
+      skipped.push(channel);
+      continue;
+    }
+
+    if (healInProgress.has(channelId)) {
+      console.log(
+        `⏭️ ${channelId}: skipping auto-heal (previous heal still in progress)`,
+      );
+      skipped.push(channel);
+      continue;
+    }
+
+    healable.push(channel);
+  }
+
+  if (healable.length === 0) {
+    return skipped;
+  }
+
+  console.log(
+    `🔧 Auto-healing ${healable.length} channel${
+      healable.length > 1 ? 's' : ''
+    }: ${healable.map((channel) => channel.channelId).join(', ')}`,
+  );
+
+  await Promise.allSettled(
+    healable.map(async (channel) => {
+      const { channelId, phoneNumber } = channel;
+      const attemptNumber = (healAttempts.get(channelId) ?? 0) + 1;
+      healAttempts.set(channelId, attemptNumber);
+      healInProgress.add(channelId);
+      try {
+        console.log(
+          `🔧 ${channelId}: heal attempt ${attemptNumber}/${MAX_HEAL_ATTEMPTS}`,
+        );
+        await whatsAppService.connectChannel(channelId, phoneNumber);
+      } catch (error) {
+        console.error(`❌ Auto-heal failed for ${channelId}:`, error);
+      } finally {
+        healInProgress.delete(channelId);
+      }
+    }),
+  );
+
+  // Give Baileys time to complete handshake before re-checking
+  await new Promise((resolve) => setTimeout(resolve, HEAL_RECHECK_DELAY_MS));
+
+  const stillUnhealthyAfterHeal = await recheckChannels(healable);
+
+  const recovered = healable.length - stillUnhealthyAfterHeal.length;
+  if (recovered > 0) {
+    console.log(`✅ Auto-heal recovered ${recovered} channel${recovered > 1 ? 's' : ''}`);
+  }
+
+  return [...skipped, ...stillUnhealthyAfterHeal];
+};
+
+/**
+ * Drop entries for channels that no longer exist (deleted or marked isActive=false)
+ */
+const pruneStaleCounters = (knownChannelIds: Set<string>): void => {
+  for (const channelId of alertCounters.keys()) {
+    if (!knownChannelIds.has(channelId)) {
+      alertCounters.delete(channelId);
+    }
+  }
+  for (const channelId of healAttempts.keys()) {
+    if (!knownChannelIds.has(channelId)) {
+      healAttempts.delete(channelId);
+    }
+  }
+  for (const channelId of healInProgress) {
+    if (!knownChannelIds.has(channelId)) {
+      healInProgress.delete(channelId);
+    }
+  }
+};
+
+/**
+ * Execute health check, attempt auto-heal, then notify only what stayed unhealthy
  */
 const executeHealthCheck = async (): Promise<void> => {
+  if (isExecutionInProgress) {
+    console.log('⏭️ Health check skipped: previous tick still running');
+    return;
+  }
+  isExecutionInProgress = true;
   try {
     console.log('🏥 Starting WhatsApp health check...');
 
     const { healthy, unhealthy } = await checkWhatsAppHealth();
+
+    pruneStaleCounters(new Set([...healthy, ...unhealthy.map((c) => c.channelId)]));
 
     console.log(`✅ Healthy channels: ${healthy.length}`);
     console.log(`❌ Unhealthy channels: ${unhealthy.length}`);
@@ -337,14 +489,26 @@ const executeHealthCheck = async (): Promise<void> => {
     if (unhealthy.length > 0) {
       console.log(
         '📋 Unhealthy channels:',
-        unhealthy.map((ch) => ch.channelId).join(', '),
+        unhealthy.map((channel) => channel.channelId).join(', '),
       );
-      await notifyUnhealthyChannels(unhealthy);
+
+      const stillUnhealthy = await attemptAutoHeal(unhealthy);
+
+      if (stillUnhealthy.length > 0) {
+        console.log(
+          `📨 Notifying about ${stillUnhealthy.length} channel${
+            stillUnhealthy.length > 1 ? 's' : ''
+          } still unhealthy after auto-heal`,
+        );
+        await notifyUnhealthyChannels(stillUnhealthy);
+      }
     }
 
     console.log('✅ WhatsApp health check completed');
   } catch (error) {
     console.error('❌ Error executing health check:', error);
+  } finally {
+    isExecutionInProgress = false;
   }
 };
 
@@ -404,7 +568,7 @@ export const stopWhatsAppHealthCheck = (): void => {
  */
 export const manualHealthCheck = async (): Promise<{
   healthy: string[];
-  unhealthy: Array<{ channelId: string; phoneNumber?: string; status: string }>;
+  unhealthy: Array<UnhealthyChannel>;
 }> => {
   return await checkWhatsAppHealth();
 };

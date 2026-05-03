@@ -40,3 +40,20 @@ export const HEALTH_CHECK_SCHEDULE = '*/5 * * * *';
  * Health check timezone
  */
 export const HEALTH_CHECK_TIMEZONE = 'UTC';
+
+/**
+ * Maximum consecutive auto-heal attempts before giving up and only notifying
+ */
+export const MAX_HEAL_ATTEMPTS = 3;
+
+/**
+ * Delay between auto-heal call and re-check (ms). Gives Baileys time to handshake.
+ */
+export const HEAL_RECHECK_DELAY_MS = 10_000;
+
+/**
+ * Reasons that should NOT be auto-healed — notify directly.
+ * `phone_not_registered`: number genuinely deactivated on WhatsApp
+ * `status_logged_out`: WhatsApp invalidated the linked-device session, needs QR re-pair
+ */
+export const UNHEALABLE_REASONS = ['phone_not_registered', 'status_logged_out'];
