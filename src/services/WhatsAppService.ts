@@ -137,6 +137,76 @@ function buildInteractiveContent(interactive: any): any {
   );
 }
 
+/**
+ * Validate that the type-specific required fields are present in `payload`.
+ * Throws a precise "X is required for type Y" error early so that malformed
+ * payloads are rejected BEFORE we touch the WhatsApp socket. This keeps error
+ * messages helpful for AI agents instead of masking them with channel-state
+ * errors.
+ */
+function validateMessagePayload(payload: any): void {
+  if (!payload?.type) {
+    throw new Error('"type" is required');
+  }
+  switch (payload.type) {
+    case 'text':
+      if (!payload.text?.body) {
+        throw new Error('"text.body" is required for type "text"');
+      }
+      return;
+    case 'image':
+    case 'video':
+    case 'audio':
+    case 'sticker':
+      if (!payload[payload.type]?.link && !payload[payload.type]?.data) {
+        throw new Error(
+          `"${payload.type}.link" or "${payload.type}.data" is required for type "${payload.type}"`,
+        );
+      }
+      return;
+    case 'document':
+      if (!payload.document?.link && !payload.document?.data) {
+        throw new Error(
+          '"document.link" or "document.data" is required for type "document"',
+        );
+      }
+      return;
+    case 'location':
+      if (
+        payload.location?.latitude === undefined ||
+        payload.location?.longitude === undefined
+      ) {
+        throw new Error(
+          '"location.latitude" and "location.longitude" are required for type "location"',
+        );
+      }
+      return;
+    case 'contact':
+    case 'contacts': {
+      const contacts = payload.contacts ?? (payload.contact ? [payload.contact] : []);
+      if (!Array.isArray(contacts) || contacts.length === 0) {
+        throw new Error('"contacts" array is required for type "contact"');
+      }
+      return;
+    }
+    case 'reaction':
+      if (!payload.reaction?.message_id) {
+        throw new Error('"reaction.message_id" is required for type "reaction"');
+      }
+      return;
+    case 'interactive':
+      if (!payload.interactive?.action) {
+        throw new Error('"interactive.action" is required for type "interactive"');
+      }
+      if (!payload.interactive?.body?.text) {
+        throw new Error('"interactive.body.text" is required for type "interactive"');
+      }
+      return;
+    default:
+      throw new Error(`Unsupported message type: "${payload.type}"`);
+  }
+}
+
 export interface WhatsAppServiceEvents {
   qr: (channelId: string, qr: string) => void;
   'pairing-code': (channelId: string, code: string) => void;
@@ -2224,16 +2294,22 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Sends a message using a format similar to the WhatsApp Cloud API.
    * This handles both single and bulk messages, including replies with context.
+   *
+   * Order of operations matters: payload-shape validation runs FIRST so that
+   * a malformed request gets a precise "X is required" error instead of being
+   * masked by a downstream "Channel is not connected" message — important for
+   * AI-agent debuggability.
    */
   async sendMessageFromApi(channelId: string, payload: any): Promise<any> {
-    const sock = this.connections.get(channelId);
-    if (!sock) {
-      throw new Error(`Channel ${channelId} is not connected`);
-    }
-
     let to = payload.to;
     if (!to) {
       throw new Error('Recipient "to" is required');
+    }
+    validateMessagePayload(payload);
+
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
     }
 
     const originalNumber = to; // Store original for validation
