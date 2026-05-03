@@ -47,6 +47,13 @@ const isConnectionAlive = async (
     // Check 1: Does connection exist in service?
     const activeConnections = whatsAppService.getActiveConnections();
     if (!activeConnections.includes(channelId)) {
+      // Distinguish a recoverable drop from an irreversible logout.
+      // On 'loggedOut' the close handler deletes the socket BEFORE we get here,
+      // so the in-memory status map is stale — DB is the source of truth.
+      const dbStatus = await whatsAppService.getChannelStatusFromDB(channelId);
+      if (dbStatus === 'logged_out') {
+        return { alive: false, reason: 'status_logged_out' };
+      }
       return { alive: false, reason: 'no_connection' };
     }
 
