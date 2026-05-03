@@ -4,10 +4,18 @@ import {
   TelegramMessage,
   TelegramMessageResponse,
 } from '../types/Telegram';
+import { decodeBase64Payload } from '../helpers/media';
+
+/**
+ * Default HTTP timeouts for Telegram Bot API calls (ms).
+ * Multipart uploads get a longer window because the bot has to receive the file body.
+ */
+const TELEGRAM_JSON_TIMEOUT_MS = 30_000;
+const TELEGRAM_UPLOAD_TIMEOUT_MS = 60_000;
 
 /**
  * Map a Cloud-API-style message type to a Telegram Bot API method + media field name.
- * Returns null for types that need custom handling (text, location, contact, etc.).
+ * Types not in this map (text, location, contact, etc.) get custom handling in the switch.
  */
 const MEDIA_METHOD_MAP: Record<string, { method: string; field: string }> = {
   image: { method: 'sendPhoto', field: 'photo' },
@@ -31,11 +39,11 @@ function resolveMediaSource(
     return { kind: 'url', value: mediaPayload.link };
   }
   if (mediaPayload?.data) {
-    const base64 = mediaPayload.data.includes(',')
-      ? mediaPayload.data.split(',', 2)[1]
-      : mediaPayload.data;
-    const buffer = Buffer.from(base64, 'base64');
-    const blob = new Blob([buffer], {
+    const buffer = decodeBase64Payload(mediaPayload.data);
+    // Cast to BlobPart: Node's Buffer is structurally a Uint8Array, but its
+    // backing `buffer` type widens to ArrayBufferLike (incl. SharedArrayBuffer)
+    // which the DOM Blob ctor's lib types reject.
+    const blob = new Blob([buffer as unknown as BlobPart], {
       type: mediaPayload.mime_type ?? 'application/octet-stream',
     });
     return {
@@ -80,7 +88,10 @@ export class TelegramService {
     const response = await axios.post(
       `${this.TELEGRAM_API_BASE}${botToken}/${method}`,
       body,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: TELEGRAM_JSON_TIMEOUT_MS,
+      },
     );
     if (!response.data.ok) {
       throw new Error(
@@ -113,7 +124,7 @@ export class TelegramService {
     const response = await axios.post(
       `${this.TELEGRAM_API_BASE}${botToken}/${method}`,
       form,
-      { timeout: 60000 },
+      { timeout: TELEGRAM_UPLOAD_TIMEOUT_MS },
     );
     if (!response.data.ok) {
       throw new Error(
@@ -156,93 +167,110 @@ export class TelegramService {
    * animation, location, contact.
    */
   async sendMessageFromApi(channelId: string, payload: any): Promise<any> {
-    const botToken = await this.getBotToken(channelId);
-    const chatId = payload.to ?? payload.chat_id;
-    if (!chatId) {
-      throw new Error('Recipient "to" (or "chat_id") is required');
-    }
-
-    switch (payload.type) {
-      case 'text': {
-        const text = payload.text?.body;
-        if (!text) {
-          throw new Error('"text.body" is required for text type');
-        }
-        return this.callApi(botToken, 'sendMessage', {
-          chat_id: chatId,
-          text,
-          parse_mode: payload.text.parse_mode,
-          disable_web_page_preview: payload.text.disable_web_page_preview,
-          reply_to_message_id: payload.context?.message_id,
-        });
+    try {
+      const botToken = await this.getBotToken(channelId);
+      const chatId = payload.to ?? payload.chat_id;
+      if (!chatId) {
+        throw new Error('Recipient "to" (or "chat_id") is required');
       }
-      case 'image':
-      case 'audio':
-      case 'voice':
-      case 'video':
-      case 'document':
-      case 'sticker':
-      case 'animation': {
-        const mapping = MEDIA_METHOD_MAP[payload.type];
-        const mediaPayload = payload[payload.type];
-        const source = resolveMediaSource(mediaPayload, payload.type);
-        const baseFields: Record<string, any> = {
-          chat_id: chatId,
-          caption: mediaPayload?.caption,
-          parse_mode: mediaPayload?.parse_mode,
-          reply_to_message_id: payload.context?.message_id,
-        };
-        if (payload.type === 'document' && mediaPayload?.filename) {
-          baseFields.filename = mediaPayload.filename;
-        }
-        if (source.kind === 'url') {
-          return this.callApi(botToken, mapping.method, {
-            ...baseFields,
-            [mapping.field]: source.value,
+
+      switch (payload.type) {
+        case 'text': {
+          const text = payload.text?.body;
+          if (!text) {
+            throw new Error('"text.body" is required for text type');
+          }
+          return await this.callApi(botToken, 'sendMessage', {
+            chat_id: chatId,
+            text,
+            parse_mode: payload.text.parse_mode,
+            disable_web_page_preview: payload.text.disable_web_page_preview,
+            reply_to_message_id: payload.context?.message_id,
           });
         }
-        return this.callApiMultipart(botToken, mapping.method, baseFields, {
-          field: mapping.field,
-          blob: source.value,
-          filename: source.filename,
-        });
-      }
-      case 'location': {
-        const loc = payload.location;
-        if (loc?.latitude === undefined || loc?.longitude === undefined) {
-          throw new Error(
-            '"latitude" and "longitude" are required for location type',
+        case 'image':
+        case 'audio':
+        case 'voice':
+        case 'video':
+        case 'document':
+        case 'sticker':
+        case 'animation': {
+          const mapping = MEDIA_METHOD_MAP[payload.type];
+          const mediaPayload = payload[payload.type];
+          const source = resolveMediaSource(mediaPayload, payload.type);
+          const baseFields: Record<string, any> = {
+            chat_id: chatId,
+            caption: mediaPayload?.caption,
+            parse_mode: mediaPayload?.parse_mode,
+            reply_to_message_id: payload.context?.message_id,
+          };
+          if (payload.type === 'document' && mediaPayload?.filename) {
+            baseFields.filename = mediaPayload.filename;
+          }
+          if (source.kind === 'url') {
+            return await this.callApi(botToken, mapping.method, {
+              ...baseFields,
+              [mapping.field]: source.value,
+            });
+          }
+          return await this.callApiMultipart(
+            botToken,
+            mapping.method,
+            baseFields,
+            {
+              field: mapping.field,
+              blob: source.value,
+              filename: source.filename,
+            },
           );
         }
-        return this.callApi(botToken, 'sendLocation', {
-          chat_id: chatId,
-          latitude: Number(loc.latitude),
-          longitude: Number(loc.longitude),
-          horizontal_accuracy: loc.horizontal_accuracy,
-          live_period: loc.live_period,
-        });
-      }
-      case 'contacts':
-      case 'contact': {
-        const contact = (payload.contacts ?? [payload.contact])[0];
-        if (!contact) {
-          throw new Error('"contacts" array is required for contact type');
+        case 'location': {
+          const loc = payload.location;
+          if (loc?.latitude === undefined || loc?.longitude === undefined) {
+            throw new Error(
+              '"latitude" and "longitude" are required for location type',
+            );
+          }
+          return await this.callApi(botToken, 'sendLocation', {
+            chat_id: chatId,
+            latitude: Number(loc.latitude),
+            longitude: Number(loc.longitude),
+            horizontal_accuracy: loc.horizontal_accuracy,
+            live_period: loc.live_period,
+          });
         }
-        const phone = contact.phones?.[0]?.phone;
-        if (!phone) {
-          throw new Error('contact must include at least one phone number');
+        case 'contacts':
+        case 'contact': {
+          const contact = (payload.contacts ?? [payload.contact])[0];
+          if (!contact) {
+            throw new Error('"contacts" array is required for contact type');
+          }
+          const phone = contact.phones?.[0]?.phone;
+          if (!phone) {
+            throw new Error('contact must include at least one phone number');
+          }
+          return await this.callApi(botToken, 'sendContact', {
+            chat_id: chatId,
+            phone_number: phone,
+            first_name:
+              contact.name?.first_name ??
+              contact.name?.formatted_name ??
+              'Contact',
+            last_name: contact.name?.last_name,
+            vcard: contact.vcard,
+          });
         }
-        return this.callApi(botToken, 'sendContact', {
-          chat_id: chatId,
-          phone_number: phone,
-          first_name:
-            contact.name?.first_name ?? contact.name?.formatted_name ?? 'Contact',
-          last_name: contact.name?.last_name,
-          vcard: contact.vcard,
-        });
+        default:
+          throw new Error(`Unsupported message type: "${payload.type}"`);
       }
-      default:
-        throw new Error(`Unsupported message type: "${payload.type}"`);
+    } catch (error: any) {
+      console.error(`❌ Error sending Telegram message from API:`, error);
+      if (error.response?.data) {
+        throw new Error(
+          `Telegram API error: ${error.response.data.description || error.message}`,
+        );
+      }
+      throw error;
     }
   }
 

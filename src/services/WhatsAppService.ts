@@ -28,6 +28,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
+import { decodeBase64Payload } from '../helpers/media';
 
 /**
  * Resolve a media payload into a Baileys-compatible source.
@@ -41,10 +42,7 @@ function resolveMediaSource(
     return { url: mediaPayload.link };
   }
   if (mediaPayload?.data) {
-    const base64 = mediaPayload.data.includes(',')
-      ? mediaPayload.data.split(',', 2)[1]
-      : mediaPayload.data;
-    return Buffer.from(base64, 'base64');
+    return decodeBase64Payload(mediaPayload.data);
   }
   throw new Error(`"link" or "data" (base64) is required for media type "${typeLabel}"`);
 }
@@ -2280,7 +2278,10 @@ export class WhatsAppService extends EventEmitter {
 
     switch (payload.type) {
       case 'text': {
-        const textBody = payload.text.body;
+        const textBody = payload.text?.body;
+        if (!textBody) {
+          throw new Error('"text.body" is required for text type');
+        }
         messageContent = { text: textBody };
 
         // Check for Instagram URLs and add custom link preview
