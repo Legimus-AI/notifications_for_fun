@@ -554,8 +554,11 @@ export const startWhatsAppHealthCheck = (): void => {
     `✅ WhatsApp health check cron started - running on schedule: ${HEALTH_CHECK_SCHEDULE}`,
   );
 
-  // Execute immediately on start
-  executeHealthCheck();
+  // Delay first tick by 30s so that boot-time restoration finishes before the
+  // cron observes channels in transitional states. Otherwise the cron sees
+  // status_connecting and (used to) race-fire auto-heal, creating parallel
+  // sockets and triggering WhatsApp <conflict type=replaced>.
+  setTimeout(() => executeHealthCheck(), 30_000);
 };
 
 /**

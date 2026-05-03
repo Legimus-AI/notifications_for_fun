@@ -52,8 +52,28 @@ export const MAX_HEAL_ATTEMPTS = 3;
 export const HEAL_RECHECK_DELAY_MS = 10_000;
 
 /**
- * Reasons that should NOT be auto-healed — notify directly.
- * `phone_not_registered`: number genuinely deactivated on WhatsApp
- * `status_logged_out`: WhatsApp invalidated the linked-device session, needs QR re-pair
+ * Reasons that should NOT be auto-healed.
+ *
+ * Two categories:
+ *   1. Terminal — needs human action (notify):
+ *      - phone_not_registered: number deactivated on WhatsApp
+ *      - status_logged_out: linked-device session invalidated, needs QR re-pair
+ *   2. In-progress — already being handled by another flow (silent skip):
+ *      - status_connecting / status_resetting: another connect is in flight
+ *      - status_qr_ready / status_pairing_code_ready / status_generating_qr:
+ *        waiting on user to scan/pair, not a true health failure
+ *
+ * Without skipping the in-progress states, the cron's auto-heal races against
+ * restoration on boot — fires connectChannel while another connectChannel is
+ * still handshaking → two sockets from same device-id → WhatsApp <conflict
+ * type="replaced"/> → both sessions die.
  */
-export const UNHEALABLE_REASONS = ['phone_not_registered', 'status_logged_out'];
+export const UNHEALABLE_REASONS = [
+  'phone_not_registered',
+  'status_logged_out',
+  'status_connecting',
+  'status_resetting',
+  'status_qr_ready',
+  'status_pairing_code_ready',
+  'status_generating_qr',
+];
