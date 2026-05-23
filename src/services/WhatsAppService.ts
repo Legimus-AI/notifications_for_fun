@@ -712,11 +712,34 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (connection === 'close') {
+      const disconnectError = lastDisconnect?.error as Boom | undefined;
+      const disconnectStatusCode = disconnectError?.output?.statusCode;
+      const disconnectReasonName =
+        disconnectStatusCode != null
+          ? (DisconnectReason[
+              disconnectStatusCode as DisconnectReason
+            ] ?? `unknown(${disconnectStatusCode})`)
+          : 'no_error_object';
+      const disconnectMessage =
+        disconnectError?.output?.payload?.message ??
+        disconnectError?.message ??
+        'n/a';
+      console.log(
+        `📴 ${channelId} disconnect | statusCode=${disconnectStatusCode} reason=${disconnectReasonName} message="${disconnectMessage}"`,
+      );
+      console.log(
+        `📴 ${channelId} disconnect raw:`,
+        JSON.stringify({
+          payload: disconnectError?.output?.payload,
+          data: disconnectError?.data,
+          isBoom: disconnectError?.isBoom,
+        }),
+      );
+
       this.connections.delete(channelId);
 
       const shouldReconnect =
-        (lastDisconnect?.error as Boom)?.output?.statusCode !==
-        DisconnectReason.loggedOut;
+        disconnectStatusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
         console.log(`🔄 Reconnecting ${channelId}...`);
@@ -1361,25 +1384,29 @@ export class WhatsAppService extends EventEmitter {
     const numericStatus = statusUpdate.update?.status; // Baileys sends numeric status codes
     const timestamp = statusUpdate.timestamp || Math.floor(Date.now() / 1000);
 
-    // Map Baileys numeric status codes to WhatsApp Cloud API status strings
-    // Based on actual behavior observed in logs:
-    // 0: pending/sent, 1: sent (server received), 2: sent, 3: delivered, 4: read
+    // Map Baileys numeric status codes (from WAProto.proto WebMessageInfo.Status enum)
+    // to WhatsApp Cloud API webhook status strings.
+    //   0=ERROR, 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK, 4=READ, 5=PLAYED
+    // See https://github.com/WhiskeySockets/Baileys/blob/v7.0.0-rc13/WAProto/WAProto.proto
     let webhookStatus: string;
     switch (numericStatus) {
       case 0:
-        webhookStatus = 'sent';
+        webhookStatus = 'failed'; // ERROR — message rejected by WhatsApp
         break;
       case 1:
-        webhookStatus = 'sent'; // Server received, treat as sent
+        webhookStatus = 'pending'; // PENDING — queued, not yet acked by server
         break;
       case 2:
-        webhookStatus = 'sent'; // Message sent
+        webhookStatus = 'sent'; // SERVER_ACK — server received (single ✓)
         break;
       case 3:
-        webhookStatus = 'delivered'; // Message delivered to recipient
+        webhookStatus = 'delivered'; // DELIVERY_ACK — on recipient device (double ✓)
         break;
       case 4:
-        webhookStatus = 'read'; // Message read by recipient
+        webhookStatus = 'read'; // READ — recipient opened the chat (blue ✓✓)
+        break;
+      case 5:
+        webhookStatus = 'played'; // PLAYED — voice/video note reproduced
         break;
       default:
         console.warn(
@@ -1521,18 +1548,23 @@ export class WhatsAppService extends EventEmitter {
         // Emit status update event
         this.emit('message-status', channelId, payload);
 
-        // Determine webhook event type based on status from the formatted payload
+        // Derive a specific webhook event name per status so downstream
+        // consumers can subscribe to the exact lifecycle moment they care
+        // about (e.g. `message.failed` for retry pipelines, `message.played`
+        // for voice-note analytics). Unknown statuses fall back to the
+        // generic `message.status` event to preserve forward compatibility.
         const webhookStatus =
           payload.entry[0]?.changes[0]?.value?.statuses[0]?.status;
-        let webhookEventType = 'message.status';
-
-        if (webhookStatus === 'sent') {
-          webhookEventType = 'message.sent';
-        } else if (webhookStatus === 'delivered') {
-          webhookEventType = 'message.delivered';
-        } else if (webhookStatus === 'read') {
-          webhookEventType = 'message.read';
-        }
+        const webhookEventByStatus: Record<string, string> = {
+          failed: 'message.failed',
+          pending: 'message.pending',
+          sent: 'message.sent',
+          delivered: 'message.delivered',
+          read: 'message.read',
+          played: 'message.played',
+        };
+        const webhookEventType =
+          webhookEventByStatus[webhookStatus] ?? 'message.status';
 
         // Send to webhooks
         this.sendToWebhooks(channelId, webhookEventType, payload);

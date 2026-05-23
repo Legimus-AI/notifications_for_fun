@@ -1,3 +1,10 @@
+## Unreleased (May 23, 2026)
+
+*   **Baileys upgraded 7.0.0-rc.9 → 7.0.0-rc13** — fixes random `401 loggedOut` loop introduced by 5-month gap in WA protocol changes. Drop-in upgrade, zero code changes required.
+*   **Alert delivery refactor** — WhatsApp health alerts now route through Telegram Ghost (Saved Messages) by default; WhatsApp delivery is opt-in via `ALERT_ENABLE_WHATSAPP=true` to avoid self-defeat (sending "WA is down" alerts via WA itself). CallMeBot demoted to opt-in (`ALERT_ENABLE_CALLMEBOT=true`).
+*   **Status code mapping fixed** — `formatStatusToWebhookPayload` was mapping `0` (ERROR) and `1` (PENDING) both to `'sent'`, masking real failures. Now uses the canonical `WAProto.WebMessageInfo.Status` enum: `failed`, `pending`, `sent`, `delivered`, `read`, `played`. New typed webhook event names (`message.failed`, `message.pending`, `message.played`) join the existing `message.sent` / `message.delivered` / `message.read`. See `WHATSAPP_INTEGRATION.md` for the full table.
+*   **WhatsApp API Tester UI** — new view at `/whatsapp/tester` to send any of 12 message types (text, image, video, audio normal/voice, document, sticker, location, contact, reaction, interactive button/list) with JSON payload preview + response panel.
+
 ## v9.0.5 (April 30, 2022)
 
 *   NPM updated

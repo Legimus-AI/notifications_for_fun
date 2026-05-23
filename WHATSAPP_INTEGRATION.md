@@ -235,6 +235,64 @@ socket.on('message_status_update', (data) => {
 - **`error`** - Connection failed
 - **`logged_out`** - User logged out from WhatsApp
 
+## Message Status Codes & Webhook Events
+
+Outbound messages emit a `message_status_update` Socket.io event AND fire a
+typed webhook every time their delivery state advances. The status string
+mirrors the WhatsApp Cloud API contract; the numeric code is the raw value
+emitted by Baileys, which comes directly from `WAProto.WebMessageInfo.Status`
+in the WhatsApp protobuf ([source](https://github.com/WhiskeySockets/Baileys/blob/v7.0.0-rc13/WAProto/WAProto.proto)).
+
+| Baileys code | Proto enum | Webhook `status` | Webhook event name | UI meaning |
+|---|---|---|---|---|
+| 0 | `ERROR` | `failed` | `message.failed` | WhatsApp rejected the message (banned, invalid number, blocked) |
+| 1 | `PENDING` | `pending` | `message.pending` | Queued locally, not yet acknowledged by WhatsApp server |
+| 2 | `SERVER_ACK` | `sent` | `message.sent` | WhatsApp server accepted (single ✓) |
+| 3 | `DELIVERY_ACK` | `delivered` | `message.delivered` | Reached recipient device (double ✓) |
+| 4 | `READ` | `read` | `message.read` | Recipient opened the chat (blue ✓✓) |
+| 5 | `PLAYED` | `played` | `message.played` | Voice/video note reproduced |
+| _other_ | — | `unknown` | `message.status` | Forward-compatible fallback for any future code |
+
+**Notes on actual observed behavior:**
+
+- For recipients that are online when the message arrives, Baileys frequently
+  skips `SERVER_ACK` (2) and emits `DELIVERY_ACK` (3) directly. This is a
+  WhatsApp protocol behavior, not a bug ([Baileys #620](https://github.com/WhiskeySockets/Baileys/issues/620)).
+- `failed` (code 0) typically appears for banned numbers, blocked recipients,
+  or rate-limited sends. Build retry pipelines against `message.failed`, not
+  the generic `message.status`.
+- `played` (code 5) only fires for voice notes and round video notes once the
+  recipient taps play. Plain video attachments and images do NOT emit it.
+
+**Webhook payload shape** (matches WhatsApp Cloud API verbatim, so any
+existing WA Cloud API consumer can be pointed at this service without
+changes):
+
+```json
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "<channelId>",
+    "changes": [{
+      "value": {
+        "messaging_product": "whatsapp",
+        "metadata": {
+          "display_phone_number": "<phone>",
+          "phone_number_id": "<jid>"
+        },
+        "statuses": [{
+          "id": "<messageId>",
+          "status": "delivered",
+          "timestamp": 1763756400,
+          "recipient_id": "<phone>"
+        }]
+      },
+      "field": "messages"
+    }]
+  }]
+}
+```
+
 ## Authentication Flow
 
 ### Option 1: QR Code Authentication
