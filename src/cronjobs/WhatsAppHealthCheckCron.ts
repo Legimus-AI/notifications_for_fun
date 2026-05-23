@@ -1,9 +1,8 @@
 import * as cron from 'node-cron';
 import { whatsAppService } from '../services/WhatsAppService';
-import { sendCallMeBotNotification } from '../services/callMeBotWhatsAppNotifications';
+import { sendAlertToAllRecipients } from '../services/alertDelivery';
 import Channel from '../models/Channels';
 import {
-  CALLMEBOT_RECIPIENTS,
   MAX_CONSECUTIVE_ALERTS,
   HEALTH_CHECK_SCHEDULE,
   HEALTH_CHECK_TIMEZONE,
@@ -317,27 +316,27 @@ const notifyUnhealthyChannels = async (
 
     const message = `${header}${summary}${separator}\n\n${channelsList}${footer}`;
 
+    console.log(`📤 Dispatching health alert across all configured channels...`);
+
+    const deliveryResults = await sendAlertToAllRecipients(message);
+
+    for (const deliveryResult of deliveryResults) {
+      const recipientLabel = deliveryResult.name ?? deliveryResult.recipient;
+      if (deliveryResult.ok) {
+        console.log(
+          `✅ Alert via ${deliveryResult.channel} → ${recipientLabel} (msgId=${deliveryResult.messageId ?? 'n/a'})`,
+        );
+      } else {
+        console.error(
+          `❌ Alert via ${deliveryResult.channel} → ${recipientLabel} failed: ${deliveryResult.error}`,
+        );
+      }
+    }
+
+    const successfulDeliveries = deliveryResults.filter((d) => d.ok).length;
+    const failedDeliveries = deliveryResults.length - successfulDeliveries;
     console.log(
-      `📤 Sending health alert notification to ${CALLMEBOT_RECIPIENTS.length} recipient(s)...`,
-    );
-
-    // Send notification to all configured recipients
-    const sendPromises = CALLMEBOT_RECIPIENTS.map((recipient) => {
-      console.log(
-        `📱 Sending to ${recipient.name || recipient.phone} (${recipient.phone})...`,
-      );
-      return sendCallMeBotNotification(recipient.phone, message, recipient.apiKey);
-    });
-
-    // Wait for all notifications to be sent
-    const results = await Promise.allSettled(sendPromises);
-
-    // Log results
-    const successful = results.filter((r) => r.status === 'fulfilled').length;
-    const failed = results.filter((r) => r.status === 'rejected').length;
-
-    console.log(
-      `✅ Notifications sent: ${successful} successful, ${failed} failed`,
+      `📊 Alert dispatch summary: ${successfulDeliveries}/${deliveryResults.length} channels delivered (${failedDeliveries} failed)`,
     );
   } finally {
     isNotificationInProgress = false;
