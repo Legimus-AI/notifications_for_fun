@@ -20,7 +20,7 @@ import {
   WhatsAppAuthState,
   WhatsAppAuthKey,
 } from '../models/WhatsAppAuthState';
-import Channel from '../models/Channels';
+import Channel, { WhatsAppAutomatedConfig } from '../models/Channels';
 import WhatsAppEvents from '../models/WhatsAppEvents';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -739,7 +739,8 @@ export class WhatsAppService extends EventEmitter {
       this.connections.delete(channelId);
 
       const shouldReconnect =
-        disconnectStatusCode !== DisconnectReason.loggedOut;
+        disconnectStatusCode !== DisconnectReason.loggedOut &&
+        disconnectStatusCode !== DisconnectReason.connectionReplaced;
 
       if (shouldReconnect) {
         console.log(`🔄 Reconnecting ${channelId}...`);
@@ -770,6 +771,15 @@ export class WhatsAppService extends EventEmitter {
       const sock = this.connections.get(channelId);
       if (sock && sock.user?.id) {
         const connectedPhoneNumber = sock.user.id.split(':')[0];
+
+        // WHY: detect phone rotation on the same channelId so downstream
+        // consumers (chatbot-mujeron, n8n) can sync their Bot docs. Read the
+        // previous phone BEFORE overwriting config.phoneNumber.
+        const channelDoc = await Channel.findOne({ channelId });
+        const prevPhoneNumber = (channelDoc?.config as WhatsAppAutomatedConfig)?.phoneNumber;
+        const phoneChanged =
+          !!prevPhoneNumber && prevPhoneNumber !== connectedPhoneNumber;
+
         await this.updateChannelConfig(channelId, {
           phoneNumber: connectedPhoneNumber,
           connectedAt: new Date(),
@@ -777,6 +787,20 @@ export class WhatsAppService extends EventEmitter {
         console.log(
           `📱 Captured connected phone number for ${channelId}: ${connectedPhoneNumber}`,
         );
+
+        if (phoneChanged) {
+          console.log(
+            `🔄 ${channelId} phone changed: ${prevPhoneNumber} → ${connectedPhoneNumber} (notifying webhooks)`,
+          );
+          this.sendToWebhooks(channelId, 'channel.credentials_changed', {
+            channelId,
+            oldPhoneNumber: prevPhoneNumber,
+            newPhoneNumber: connectedPhoneNumber,
+            name: sock.user.name,
+            lid: sock.user.lid,
+            changedAt: new Date().toISOString(),
+          });
+        }
       }
 
       console.log(
@@ -1034,11 +1058,13 @@ export class WhatsAppService extends EventEmitter {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        const outboundSecret = process.env.LEGIMUS_WEBHOOK_SECRET;
         await axios.post(webhook.url, payload, {
           headers: {
             'Content-Type': 'application/json',
             'X-Channel-Id': channelId,
             'X-Event': event,
+            ...(outboundSecret ? { 'X-Legimus-Secret': outboundSecret } : {}),
           },
           timeout: 30000, // 30 second timeout
         });

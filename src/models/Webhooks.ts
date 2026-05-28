@@ -44,6 +44,7 @@ const WebhookSchema = new Schema(
         'channel.qr_ready',
         'channel.pairing_code_ready',
         'channel.error',
+        'channel.credentials_changed',
         // Notification events
         'notification.sent',
         'notification.delivered',
