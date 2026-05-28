@@ -2,9 +2,17 @@ import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import * as utils from '../helpers/utils';
 import Channel, { WhatsAppAutomatedConfig } from '../models/Channels';
+import Webhook from '../models/Webhooks';
 import { whatsAppService } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
 import { handleError, formatJid } from '../helpers/utils';
+
+// Read accepted webhook event names from the Webhook model enum (single source
+// of truth). When a new event is added to models/Webhooks.ts, the controller
+// accepts it automatically — no duplicated whitelist to keep in sync.
+const WEBHOOK_EVENT_ENUM = (
+  (Webhook.schema.path('events') as any).caster?.enumValues ?? []
+) as string[];
 
 class WhatsAppController {
   /**
@@ -772,7 +780,10 @@ class WhatsAppController {
   public addWebhook = async (req: Request, res: Response): Promise<void> => {
     try {
       const { channelId } = req.params;
-      const { url, events } = req.body;
+      const { events } = req.body;
+      // Trim leading/trailing whitespace — see incident with " https://..."
+      // (leading space) breaking axios.post on dispatch.
+      const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
 
       // Validate required fields
       if (!url) {
@@ -789,17 +800,9 @@ class WhatsAppController {
         );
       }
 
-      // Validate events
-      const validEvents = [
-        'message.received',
-        'message.sent',
-        'message.delivered',
-        'message.read',
-        'message.status',
-        'call.received',
-      ];
+      // Validate events against the Webhook model's enum (single source of truth)
       const invalidEvents = events.filter(
-        (event) => !validEvents.includes(event),
+        (event) => !WEBHOOK_EVENT_ENUM.includes(event),
       );
       if (invalidEvents.length > 0) {
         return utils.handleError(
@@ -934,19 +937,11 @@ class WhatsAppController {
 
       // Prepare update object
       const updateFields: any = {};
-      if (url !== undefined) updateFields['webhooks.$.url'] = url;
+      if (url !== undefined) updateFields['webhooks.$.url'] = url.trim();
       if (events !== undefined) {
-        // Validate events
-        const validEvents = [
-          'message.received',
-          'message.sent',
-          'message.delivered',
-          'message.read',
-          'message.status',
-          'call.received',
-        ];
+        // Validate events against the Webhook model's enum (single source of truth)
         const invalidEvents = events.filter(
-          (event: string) => !validEvents.includes(event),
+          (event: string) => !WEBHOOK_EVENT_ENUM.includes(event),
         );
         if (invalidEvents.length > 0) {
           return utils.handleError(
