@@ -1,18 +1,10 @@
-import { telegramGhostCallerService } from './TelegramGhostCallerService';
 import { whatsAppService } from './WhatsAppService';
-import { sendCallMeBotNotification } from './callMeBotWhatsAppNotifications';
 import {
-  TELEGRAM_GHOST_RECIPIENTS,
   WHATSAPP_FALLBACK_RECIPIENTS,
   ENABLE_WHATSAPP_FALLBACK,
-  ENABLE_CALLMEBOT_FALLBACK,
 } from '../config/alertRecipients.config';
-import { CALLMEBOT_RECIPIENTS } from '../config/healthCheck.config';
 
-export type AlertDeliveryChannel =
-  | 'telegram_ghost'
-  | 'whatsapp_cloud'
-  | 'callmebot';
+export type AlertDeliveryChannel = 'whatsapp_cloud';
 
 export type AlertDeliveryResult = {
   channel: AlertDeliveryChannel;
@@ -24,9 +16,9 @@ export type AlertDeliveryResult = {
 };
 
 /**
- * Hard cap so an oversized message doesn't get rejected by Telegram (4096
- * char limit) or WhatsApp (also ~4096). Truncate with a visible marker so
- * the reader knows context was lost.
+ * Hard cap so an oversized message doesn't get rejected by WhatsApp
+ * (~4096 char limit). Truncate with a visible marker so the reader knows
+ * context was lost.
  *
  * WHY Array.from: alerts contain emojis (🚨 📊). String.slice cuts by UTF-16
  * code units and would split surrogate pairs, producing invalid UTF-8 that
@@ -41,29 +33,22 @@ const capMessageLength = (message: string): string => {
 };
 
 /**
- * Dispatch an alert across every configured channel in parallel.
+ * Dispatch an alert via every enabled transport (currently WhatsApp Cloud
+ * only — Telegram Ghost and CallMeBot were removed on 2026-05-29).
  *
- * Returns ALL outcomes so the caller can log per-channel success/failure
- * (callers should NOT treat a single success as "delivered" — they should
- * know which recipient actually got the message).
+ * Returns ALL outcomes so the caller can log per-recipient success/failure.
+ * Each delivery is best-effort and never throws.
  *
- * Each channel is best-effort and never throws; failures are reported in
- * the returned array so a broken sub-system can't crash the cron tick.
- *
- * WHY default to Telegram-only: WhatsApp health alerts fire when WA is
- * down by definition, so sending the alert via WhatsApp would silently
- * fail. Telegram (MTProto user session) lives in a separate fate domain.
- * Set ENABLE_WHATSAPP_FALLBACK=true to also dispatch via WhatsApp when
- * the alert is unrelated to WA health (future ops alerts).
+ * WHY a single transport is acceptable for now: the gateway being monitored
+ * IS WhatsApp, so a WA-side outage may swallow the alert. That trade-off
+ * is accepted explicitly while we stabilize the gateway; if a separate
+ * fanout (Telegram bot / webhook) is wired later, add it back here.
  */
 export const sendAlertToAllRecipients = async (
   message: string,
 ): Promise<AlertDeliveryResult[]> => {
   const cappedMessage = capMessageLength(message);
 
-  // Track each task alongside its provider metadata so a rejected promise
-  // can be attributed to the correct channel/recipient (otherwise the log
-  // would mislabel every unexpected throw as `telegram_ghost`/`unknown`).
   type Tracked = {
     channel: AlertDeliveryChannel;
     recipient: string;
@@ -71,20 +56,6 @@ export const sendAlertToAllRecipients = async (
     task: Promise<AlertDeliveryResult>;
   };
   const tracked: Tracked[] = [];
-
-  for (const telegramRecipient of TELEGRAM_GHOST_RECIPIENTS) {
-    tracked.push({
-      channel: 'telegram_ghost',
-      recipient: telegramRecipient.recipient,
-      name: telegramRecipient.name,
-      task: deliverViaTelegramGhost(
-        telegramRecipient.channelId,
-        telegramRecipient.recipient,
-        cappedMessage,
-        telegramRecipient.name,
-      ),
-    });
-  }
 
   if (ENABLE_WHATSAPP_FALLBACK) {
     for (const whatsappRecipient of WHATSAPP_FALLBACK_RECIPIENTS) {
@@ -102,22 +73,6 @@ export const sendAlertToAllRecipients = async (
     }
   }
 
-  if (ENABLE_CALLMEBOT_FALLBACK) {
-    for (const callMeBotRecipient of CALLMEBOT_RECIPIENTS) {
-      tracked.push({
-        channel: 'callmebot',
-        recipient: callMeBotRecipient.phone,
-        name: callMeBotRecipient.name,
-        task: deliverViaCallMeBot(
-          callMeBotRecipient.phone,
-          cappedMessage,
-          callMeBotRecipient.apiKey,
-          callMeBotRecipient.name,
-        ),
-      });
-    }
-  }
-
   const settled = await Promise.allSettled(tracked.map((t) => t.task));
   return settled.map((outcome, index) => {
     const meta = tracked[index];
@@ -130,36 +85,6 @@ export const sendAlertToAllRecipients = async (
       error: `Delivery task unexpectedly threw: ${outcome.reason}`,
     };
   });
-};
-
-const deliverViaTelegramGhost = async (
-  channelId: string,
-  recipient: string,
-  message: string,
-  name?: string,
-): Promise<AlertDeliveryResult> => {
-  try {
-    const result = await telegramGhostCallerService.sendMessage(channelId, {
-      recipient,
-      text: message,
-    });
-    return {
-      channel: 'telegram_ghost',
-      recipient,
-      name,
-      ok: result.success,
-      messageId: result.messageId,
-      error: result.error,
-    };
-  } catch (error: any) {
-    return {
-      channel: 'telegram_ghost',
-      recipient,
-      name,
-      ok: false,
-      error: error?.message ?? String(error),
-    };
-  }
 };
 
 const deliverViaWhatsApp = async (
@@ -201,32 +126,6 @@ const deliverViaWhatsApp = async (
     return {
       channel: 'whatsapp_cloud',
       recipient,
-      name,
-      ok: false,
-      error: error?.message ?? String(error),
-    };
-  }
-};
-
-const deliverViaCallMeBot = async (
-  phone: string,
-  message: string,
-  apiKey: string,
-  name?: string,
-): Promise<AlertDeliveryResult> => {
-  try {
-    const ok = await sendCallMeBotNotification(phone, message, apiKey);
-    return {
-      channel: 'callmebot',
-      recipient: phone,
-      name,
-      ok,
-      error: ok ? undefined : 'CallMeBot returned non-200',
-    };
-  } catch (error: any) {
-    return {
-      channel: 'callmebot',
-      recipient: phone,
       name,
       ok: false,
       error: error?.message ?? String(error),

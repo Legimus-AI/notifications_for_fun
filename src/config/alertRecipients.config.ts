@@ -1,23 +1,20 @@
 /**
  * Alert delivery configuration
  *
- * Routes WhatsApp health-check alerts (and any future ops alert) through
- * Telegram by default — when WhatsApp is the system being monitored, you
- * cannot rely on WhatsApp itself to deliver "WhatsApp is down" notices.
+ * Single transport: WhatsApp Cloud-style endpoint.
  *
- * Priority order:
- *   1. Telegram Ghost (MTProto user session, independent fate domain) — ALWAYS ON
- *   2. WhatsApp Cloud-style endpoint — opt-in (ENABLE_WHATSAPP_FALLBACK=true)
- *   3. CallMeBot legacy — opt-in (ENABLE_CALLMEBOT_FALLBACK=true)
+ * Why we removed Telegram Ghost and CallMeBot (2026-05-29):
+ *   - Telegram Ghost: the configured channelId stopped existing in the
+ *     channels collection ("Channel 41918720-... not found") and every
+ *     health-tick spammed retries → noise + leak vector.
+ *   - CallMeBot: account paused upstream (HTTP 208 "Your Account is
+ *     Paused"); no SLA, no path to resume cleanly.
+ *
+ * If WhatsApp is the system being monitored, this means a WA-health alert
+ * goes via WA itself and may not deliver during a full outage. That trade-
+ * off is accepted explicitly while the gateway is being stabilized — once
+ * a fanout target (Telegram bot / internal webhook) is wired, add it here.
  */
-
-export type TelegramGhostRecipient = {
-  /** UUID of a `type: 'telegram_ghost_caller'` channel in the channels collection */
-  channelId: string;
-  /** gramJS entity selector: `'me'` (Saved Messages), `'@username'`, or `'+phone'` */
-  recipient: string;
-  name?: string;
-};
 
 export type WhatsAppCloudRecipient = {
   /** UUID of a `type: 'whatsapp_automated'` channel (must be healthy to deliver) */
@@ -28,27 +25,8 @@ export type WhatsAppCloudRecipient = {
 };
 
 /**
- * Primary alert path. Saved Messages of the ghost caller account is the
- * default — guaranteed delivery to whoever owns that Telegram number, no
- * contact import dance required.
- *
- * Override with env: ALERT_TELEGRAM_GHOST_CHANNEL_ID, ALERT_TELEGRAM_GHOST_RECIPIENT.
- */
-export const TELEGRAM_GHOST_RECIPIENTS: TelegramGhostRecipient[] = [
-  {
-    channelId:
-      process.env.ALERT_TELEGRAM_GHOST_CHANNEL_ID ||
-      '41918720-d3af-4857-a753-815ed991058f',
-    recipient: process.env.ALERT_TELEGRAM_GHOST_RECIPIENT || 'me',
-    name: 'Telegram Ghost (Saved Messages)',
-  },
-];
-
-/**
- * Secondary path. NOT used for WhatsApp-health alerts (would self-defeat).
- * Set ENABLE_WHATSAPP_FALLBACK=true to enable for non-WA-health alerts.
- *
- * Override with env: ALERT_WHATSAPP_CHANNEL_ID, ALERT_WHATSAPP_RECIPIENT.
+ * Primary (and currently only) alert path. Override with env:
+ *   ALERT_WHATSAPP_CHANNEL_ID, ALERT_WHATSAPP_RECIPIENT.
  */
 export const WHATSAPP_FALLBACK_RECIPIENTS: WhatsAppCloudRecipient[] = [
   {
@@ -61,16 +39,8 @@ export const WHATSAPP_FALLBACK_RECIPIENTS: WhatsAppCloudRecipient[] = [
 ];
 
 /**
- * Enable WhatsApp delivery for alerts. Default OFF because WhatsApp
- * health alerts (the dominant use case) would self-defeat if dispatched
- * via WhatsApp itself.
+ * WhatsApp delivery is enabled by default now that the other transports
+ * were removed. Flip ALERT_ENABLE_WHATSAPP=false to mute alerts entirely.
  */
 export const ENABLE_WHATSAPP_FALLBACK =
-  process.env.ALERT_ENABLE_WHATSAPP === 'true';
-
-/**
- * Toggle the legacy CallMeBot path. Account is currently paused (status 208)
- * — set ALERT_ENABLE_CALLMEBOT=true to re-enable once CallMeBot is resumed.
- */
-export const ENABLE_CALLMEBOT_FALLBACK =
-  process.env.ALERT_ENABLE_CALLMEBOT === 'true';
+  (process.env.ALERT_ENABLE_WHATSAPP ?? 'true') !== 'false';
