@@ -82,6 +82,10 @@ router.delete(
   '/channels/:channelId/webhooks/:webhookId',
   whatsAppController.deleteWebhook,
 );
+router.post(
+  '/channels/:channelId/webhooks/:webhookId/test',
+  whatsAppController.testWebhook,
+);
 
 //
 // LID Management Routes

@@ -1,9 +1,14 @@
 import { Request, Response } from 'express';
+import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import * as utils from '../helpers/utils';
 import Channel, { WhatsAppAutomatedConfig } from '../models/Channels';
 import Webhook from '../models/Webhooks';
-import { whatsAppService } from '../services/WhatsAppService';
+import {
+  whatsAppService,
+  renderWebhookBody,
+  mapToObject,
+} from '../services/WhatsAppService';
 import mongoose from 'mongoose';
 import { handleError, formatJid } from '../helpers/utils';
 
@@ -1051,6 +1056,153 @@ class WhatsAppController {
           channelId,
           deletedWebhookId: webhookId,
           deletedWebhookUrl: webhookUrl,
+        },
+      });
+    } catch (error) {
+      utils.handleError(res, error);
+    }
+  };
+
+  /**
+   * Dry-run dispatch of a single webhook with a synthetic sample payload.
+   * Lets the panel verify URL + headers + template + downstream HTTP response
+   * before relying on a real event to fire. No retry. Returns diagnostics.
+   */
+  public testWebhook = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId, webhookId } = req.params;
+      const requestedEvent: string | undefined = req.body?.eventType;
+
+      const channel = await Channel.findOne({ channelId });
+      if (!channel) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'),
+        );
+      }
+      const webhook = channel.webhooks.find(
+        (w: any) => w._id?.toString() === webhookId,
+      );
+      if (!webhook) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(404, 'WEBHOOK_NOT_FOUND'),
+        );
+      }
+
+      const event = requestedEvent || webhook.events[0];
+      if (!event) {
+        return utils.handleError(
+          res,
+          utils.buildErrObject(400, 'WEBHOOK_HAS_NO_EVENTS'),
+        );
+      }
+
+      // Build a synthetic payload — same shape the live dispatcher emits.
+      // Add a new branch here when introducing a new event type.
+      const phoneNumber = (channel.config as WhatsAppAutomatedConfig)?.phoneNumber;
+      const samples: Record<string, any> = {
+        'channel.disconnected': {
+          channelId,
+          phoneNumber: phoneNumber ?? '0000000000',
+          channelName: channel.name,
+          reason: 'loggedOut',
+          statusCode: 401,
+          message: '(test) sample disconnect payload',
+          willReconnect: false,
+          disconnectedAt: new Date().toISOString(),
+        },
+        'channel.credentials_changed': {
+          channelId,
+          oldPhoneNumber: phoneNumber ?? '0000000000',
+          newPhoneNumber: '0000000001',
+          name: 'Test Account',
+          lid: 'test:0@lid',
+          changedAt: new Date().toISOString(),
+        },
+        'message.received': {
+          channelId,
+          from: '0000000000@s.whatsapp.net',
+          type: 'text',
+          body: '(test) sample inbound message',
+          messageId: 'TEST-' + Date.now(),
+          timestamp: Date.now(),
+        },
+      };
+      const samplePayload = samples[event] ?? {
+        channelId,
+        event,
+        note: 'no sample template for this event — using minimal payload',
+      };
+
+      const { body, contentType } = renderWebhookBody(
+        webhook,
+        samplePayload,
+        channelId,
+        event,
+      );
+      const method = (webhook.method || 'POST').toUpperCase();
+      const customHeaders = mapToObject(webhook.headers);
+
+      const startedAt = Date.now();
+      let result: {
+        ok: boolean;
+        statusCode?: number;
+        responseBody?: any;
+        responseHeaders?: any;
+        error?: string;
+      } = { ok: false };
+      try {
+        const axiosResp = await axios.request({
+          method,
+          url: webhook.url,
+          data: body,
+          headers: {
+            'Content-Type': contentType,
+            'X-Channel-Id': channelId,
+            'X-Event': event,
+            'X-Test-Dispatch': '1',
+            ...customHeaders,
+          },
+          timeout: 15_000,
+          validateStatus: () => true, // any status is fine for diagnostics
+        });
+        result = {
+          ok: axiosResp.status >= 200 && axiosResp.status < 300,
+          statusCode: axiosResp.status,
+          responseBody: axiosResp.data,
+          responseHeaders: axiosResp.headers,
+        };
+      } catch (e: any) {
+        result = {
+          ok: false,
+          error: e?.message || String(e),
+        };
+      }
+      const durationMs = Date.now() - startedAt;
+
+      res.status(200).json({
+        ok: result.ok,
+        event,
+        webhookId,
+        durationMs,
+        rendered: {
+          method,
+          url: webhook.url,
+          contentType,
+          body,
+          headers: {
+            'Content-Type': contentType,
+            'X-Channel-Id': channelId,
+            'X-Event': event,
+            ...customHeaders,
+          },
+        },
+        samplePayload,
+        response: {
+          statusCode: result.statusCode ?? null,
+          body: result.responseBody ?? null,
+          error: result.error ?? null,
         },
       });
     } catch (error) {

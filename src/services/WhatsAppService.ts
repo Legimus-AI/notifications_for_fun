@@ -3107,7 +3107,7 @@ export const whatsAppService = new WhatsAppService();
 // specific shape (e.g. WhatsApp Cloud API /messages endpoint) instead of the
 // raw event JSON we'd send by default.
 
-function renderWebhookBody(
+export function renderWebhookBody(
   webhook: any,
   payload: any,
   channelId: string,
@@ -3134,7 +3134,7 @@ function renderWebhookBody(
   }
 }
 
-function mapToObject(
+export function mapToObject(
   m: Map<string, string> | Record<string, string> | undefined,
 ): Record<string, string> {
   if (!m) return {};
