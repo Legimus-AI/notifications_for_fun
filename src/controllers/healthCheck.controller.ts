@@ -123,14 +123,14 @@ class HealthCheckController {
     res: Response,
   ): Promise<void> => {
     try {
-      const mem = process.memoryUsage();
+      const memoryUsage = process.memoryUsage();
       res.status(200).json({
         ok: true,
         timestamp: new Date().toISOString(),
         process: {
           uptimeSeconds: Math.round(process.uptime()),
-          rssMb: Math.round(mem.rss / 1024 / 1024),
-          heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+          rssMb: Math.round(memoryUsage.rss / 1024 / 1024),
+          heapUsedMb: Math.round(memoryUsage.heapUsed / 1024 / 1024),
         },
         channels: channelMetrics.getSnapshot(),
       });

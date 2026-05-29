@@ -269,10 +269,10 @@ export class WhatsAppService extends EventEmitter {
     // in the logs without re-bloating them. Pairs with GET /health_check/channels
     // for live state. .unref() so it never keeps the process alive on shutdown.
     setInterval(() => {
-      const mem = process.memoryUsage();
+      const memoryUsage = process.memoryUsage();
       console.log(
-        `🧠 [heartbeat] rss=${Math.round(mem.rss / 1048576)}mb ` +
-          `heapUsed=${Math.round(mem.heapUsed / 1048576)}mb ` +
+        `🧠 [heartbeat] rss=${Math.round(memoryUsage.rss / 1048576)}mb ` +
+          `heapUsed=${Math.round(memoryUsage.heapUsed / 1048576)}mb ` +
           `sockets=${this.connections.size} ` +
           `reconnecting=${this.reconnectAttempts.size}`,
       );
