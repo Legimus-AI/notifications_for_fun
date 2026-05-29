@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import mongoosePaginate from 'mongoose-paginate-v2';
+import { WEBHOOK_EVENTS } from './Webhooks';
 
 // whatsapp_automated specific config interface
 export interface WhatsAppAutomatedConfig {
@@ -68,6 +69,16 @@ export interface IWebhook extends Document {
   url: string;
   events: string[];
   isActive: boolean;
+  // Optional advanced fields — when set, override default JSON-passthrough dispatch.
+  // payloadTemplate: raw string with {{var}} placeholders, rendered against the
+  // event payload and sent as the request body. Leave empty for the legacy
+  // behavior (send the full payload JSON to the URL).
+  payloadTemplate?: string;
+  // headers: extra headers merged on top of the defaults (Content-Type, X-Event...).
+  // Common use: Authorization: Bearer xxx for downstream APIs.
+  headers?: Map<string, string>;
+  // method: HTTP verb to use. Default POST.
+  method?: 'POST' | 'PUT';
 }
 
 export type ChannelConfig =
@@ -177,16 +188,23 @@ const ChannelSchema = new Schema(
           events: {
             type: [String],
             required: true,
-            enum: [
-              'message.received',
-              'message.sent',
-              'message.delivered',
-              'message.read',
-            ],
+            enum: WEBHOOK_EVENTS,
           },
           isActive: {
             type: Boolean,
             default: true,
+          },
+          payloadTemplate: {
+            type: String,
+          },
+          headers: {
+            type: Map,
+            of: String,
+          },
+          method: {
+            type: String,
+            enum: ['POST', 'PUT'],
+            default: 'POST',
           },
         },
         {

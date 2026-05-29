@@ -753,6 +753,27 @@ export class WhatsAppService extends EventEmitter {
         // WHY: connectedAt drives the "Connected since" UI marker; leaving it
         // set makes a logged-out channel look connected. Clear it on logout.
         await this.updateChannelConfig(channelId, { connectedAt: null });
+
+        // Fire channel.disconnected webhook only on terminal disconnects (logout
+        // or connectionReplaced). Other closes are transitory (restartRequired
+        // 515 after pairing, network blips) and reconnect by themselves —
+        // alerting on those would be noisy.
+        try {
+          const channelDoc = await Channel.findOne({ channelId });
+          const phoneFromConfig = (channelDoc?.config as WhatsAppAutomatedConfig)?.phoneNumber;
+          this.sendToWebhooks(channelId, 'channel.disconnected', {
+            channelId,
+            phoneNumber: phoneFromConfig ?? phoneNumber ?? null,
+            channelName: channelDoc?.name ?? null,
+            reason: disconnectReasonName,
+            statusCode: disconnectStatusCode ?? null,
+            message: disconnectMessage,
+            willReconnect: false,
+            disconnectedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.error(`❌ Failed to fire channel.disconnected for ${channelId}:`, err);
+        }
       }
     }
 
@@ -1059,15 +1080,25 @@ export class WhatsAppService extends EventEmitter {
     const maxRetries = 3;
     const baseDelay = 1000; // 1 second
 
+    // Apply optional template + custom headers/method when present on the webhook.
+    // Backward compatible: empty fields → legacy JSON-passthrough POST.
+    const { body, contentType } = renderWebhookBody(webhook, payload, channelId, event);
+    const method = (webhook.method || 'POST').toUpperCase();
+    const customHeaders = mapToObject(webhook.headers);
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const outboundSecret = process.env.LEGIMUS_WEBHOOK_SECRET;
-        await axios.post(webhook.url, payload, {
+        await axios.request({
+          method,
+          url: webhook.url,
+          data: body,
           headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': contentType,
             'X-Channel-Id': channelId,
             'X-Event': event,
             ...(outboundSecret ? { 'X-Legimus-Secret': outboundSecret } : {}),
+            ...customHeaders, // user-defined headers win (allows overriding auth, content-type, etc.)
           },
           timeout: 30000, // 30 second timeout
         });
@@ -3069,3 +3100,44 @@ export class WhatsAppService extends EventEmitter {
 
 // Singleton instance
 export const whatsAppService = new WhatsAppService();
+
+// ── Webhook payload templating ─────────────────────────────────────────────
+// Simple {{var}} → payload[var] substitution. Used when a per-channel webhook
+// defines a `payloadTemplate` — lets users wire alerts to APIs that expect a
+// specific shape (e.g. WhatsApp Cloud API /messages endpoint) instead of the
+// raw event JSON we'd send by default.
+
+function renderWebhookBody(
+  webhook: any,
+  payload: any,
+  channelId: string,
+  event: string,
+): { body: any; contentType: string } {
+  if (!webhook.payloadTemplate) {
+    // Legacy path: send raw payload JSON.
+    return { body: payload, contentType: 'application/json' };
+  }
+  const vars = { ...payload, channelId, event };
+  const rendered = webhook.payloadTemplate.replace(
+    /\{\{\s*(\w+)\s*\}\}/g,
+    (_match: string, key: string) => {
+      const value = vars[key];
+      if (value === undefined || value === null) return '';
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    },
+  );
+  // Try parse as JSON; if invalid, send as raw text.
+  try {
+    return { body: JSON.parse(rendered), contentType: 'application/json' };
+  } catch {
+    return { body: rendered, contentType: 'text/plain; charset=utf-8' };
+  }
+}
+
+function mapToObject(
+  m: Map<string, string> | Record<string, string> | undefined,
+): Record<string, string> {
+  if (!m) return {};
+  if (m instanceof Map) return Object.fromEntries(m);
+  return m;
+}
