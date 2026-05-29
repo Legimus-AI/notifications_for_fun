@@ -92,6 +92,27 @@ Heap snapshot del proceso vivo (`node --inspect` / `pm2 monit` + `take_heapsnaps
 
 > **Para el agente que ejecuta (Albor).** Trabaja TODO en el Beelink. NADA se despliega ni se escribe a DB sin confirmación explícita de Victor.
 
+## ESTADO DE IMPLEMENTACIÓN (actualizado 2026-05-29, rama `fix/whatsapp-gateway-stability`)
+
+| Tarea | Estado | Commit |
+|-------|--------|--------|
+| T1 — guard removeSuffixFromJid/formatJid | ✅ HECHO | `6b3399d` (+ test `utils.test.ts`) |
+| T2 — gate verbosidad de logs (DEBUG_BAILEYS_PAYLOADS) | ✅ HECHO | `22a7db2` |
+| T3 — clasificación 401 conflict + backoff capado | ✅ HECHO | `505dcac` |
+| T8 — fix OOM: teardownSocket + removeAllListeners + timers | ✅ HECHO (código) | `505dcac` |
+| T4 — ChannelMetricsService + channel_events (TTL) | ✅ HECHO | `f8ff7f1` |
+| T5 — GET /health_check/channels | ✅ HECHO | `472611f` |
+| T6 — ecosystem hardening (kill_timeout/min_uptime/max_restarts) | ✅ HECHO (código) | `9c798d6` |
+| T7 — drop CallMeBot + Telegram Ghost | ✅ HECHO | `863f6a3` |
+| **T8.6 — verificación heap snapshot (curativa)** | ⏳ PENDIENTE | requiere proceso vivo + Victor |
+| **T8.7 — TTL en WhatsAppEvents (bloat DB)** | ⏳ PENDIENTE | — |
+| **T0 — dedupe canal +56976282350 + re-pair QR** | ⏳ PENDIENTE | operación, requiere OK Victor |
+| **pm2-logrotate install + flush 7.3GB** | ⏳ PENDIENTE | operación en Mac Julian, requiere OK Victor |
+| **DEPLOY a Mac de Julian** | ⏳ PENDIENTE | requiere OK Victor |
+
+`tsc --noEmit` pasa limpio en la rama. **Nada desplegado.** Lo que falta es: confirmar la cura del OOM con heap snapshot (T8 ataca una fuga REAL confirmada en código —listeners no removidos— pero hay que verificar que no haya otra fuente, p.ej. Baileys 7.0.0-rc13), el TTL de WhatsAppEvents, y las operaciones que requieren OK de Victor (dedupe, QR, logrotate, deploy).
+
+
 ## Setup (ya hecho)
 
 - **Repo:** `~/Data/victor/notifications_for_fun` en el Beelink (`viktorjjf@192.168.1.82`).
