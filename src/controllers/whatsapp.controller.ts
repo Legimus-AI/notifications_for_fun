@@ -168,6 +168,15 @@ class WhatsAppController {
         status = channel.status;
       }
 
+      // WHY: see listChannels — reconcile against the live socket so a dead
+      // channel never reports 'active'/'open' from a stale persisted value.
+      if (
+        (status === 'active' || status === 'open') &&
+        !whatsAppService.isChannelConnected(channelId)
+      ) {
+        status = 'logged_out';
+      }
+
       res.status(200).json({
         ok: true,
         payload: {
@@ -303,6 +312,17 @@ class WhatsAppController {
         if (status === 'inactive' && channel.status !== 'inactive') {
           // Use database status if memory shows inactive but DB shows different status
           status = channel.status;
+        }
+
+        // WHY: status (from memory OR the persisted DB value) can claim
+        // 'active'/'open' after a socket dies without a clean 'close'. The live
+        // socket is the source of truth the send path uses — never report a
+        // channel as connected when no live socket exists.
+        if (
+          (status === 'active' || status === 'open') &&
+          !whatsAppService.isChannelConnected(channel.channelId)
+        ) {
+          status = 'logged_out';
         }
 
         return {
@@ -1125,6 +1145,38 @@ class WhatsAppController {
       res.status(200).json(result);
     } catch (error) {
       console.error('Error getting LID by phone number:', error);
+      utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * POST /api/whatsapp/channels/:channelId/status
+   * Publish a WhatsApp Status (Story) of type text|image|video|audio.
+   * Requires a non-empty `statusJidList` of recipient JIDs (only contacts
+   * in this list will see the story — WhatsApp does not broadcast to all).
+   */
+  public sendStatus = async (req: Request, res: Response) => {
+    try {
+      const { channelId } = req.params;
+      const payload = req.body;
+
+      if (!payload?.type) {
+        return res.status(400).json({
+          ok: false,
+          error: '"type" is required (text|image|video|audio)',
+        });
+      }
+      if (!Array.isArray(payload?.statusJidList) || payload.statusJidList.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          error: '"statusJidList" must be a non-empty array of JIDs',
+        });
+      }
+
+      const sendResult = await whatsAppService.sendStatus(channelId, payload);
+      return res.status(200).json({ ok: true, payload: sendResult });
+    } catch (error) {
+      console.error('Error posting WhatsApp Status:', error);
       utils.handleError(res, utils.buildErrObject(500, error.message));
     }
   };

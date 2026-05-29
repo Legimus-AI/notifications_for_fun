@@ -750,6 +750,9 @@ export class WhatsAppService extends EventEmitter {
       } else {
         console.log(`🚪 ${channelId} logged out`);
         await this.updateChannelStatus(channelId, 'logged_out');
+        // WHY: connectedAt drives the "Connected since" UI marker; leaving it
+        // set makes a logged-out channel look connected. Clear it on logout.
+        await this.updateChannelConfig(channelId, { connectedAt: null });
       }
     }
 
@@ -2020,9 +2023,30 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Gets connection status for a channel
    */
+  /**
+   * True only if a live socket exists for this channel. Same source of truth the
+   * send path uses (connections.get) — survives a socket dying without a 'close'.
+   */
+  isChannelConnected(channelId: string): boolean {
+    return !!this.connections.get(channelId);
+  }
+
   getChannelStatus(channelId: string): string {
     // First check in-memory status
     const memoryStatus = this.connectionStatus.get(channelId);
+
+    // WHY: connections is the source of truth for a LIVE socket (deleted on 'close').
+    // The cache can still go stale at 'active'/'open' if a socket dies via
+    // device_removed/conflict without a clean reset. If the cache claims connected
+    // but no live socket exists, report 'logged_out' so the UI never shows
+    // "Connected" for a dead channel.
+    if (
+      (memoryStatus === 'active' || memoryStatus === 'open') &&
+      !this.connections.has(channelId)
+    ) {
+      return 'logged_out';
+    }
+
     if (memoryStatus) {
       return memoryStatus;
     }
@@ -2124,6 +2148,11 @@ export class WhatsAppService extends EventEmitter {
     channelId: string,
     status: string,
   ): Promise<void> {
+    // WHY: connectionStatus is the in-memory cache read by getChannelStatus(). It
+    // MUST move in lockstep with the persisted status — otherwise a socket that dies
+    // keeps reporting its last 'active' value (the cache was only ever set on connect,
+    // never on disconnect). This is the root of the channel status desync.
+    this.connectionStatus.set(channelId, status);
     try {
       await Channel.findOneAndUpdate(
         { channelId },
@@ -2923,6 +2952,118 @@ export class WhatsAppService extends EventEmitter {
       );
       throw error;
     }
+  }
+
+  /**
+   * Post a WhatsApp Status (Story) on behalf of the channel.
+   *
+   * Baileys sends Status by addressing `status@broadcast` with the message
+   * options carrying `statusJidList` (the contacts who'll see the story),
+   * `broadcast: true`, and optional `backgroundColor` + `font` for text
+   * stories. Returns the message id Baileys assigned so callers can track
+   * it via the same status webhook pipeline as 1-to-1 messages.
+   *
+   * Payload schema:
+   *   { type: 'text', text: string,
+   *       statusJidList: string[],            // recipients: ['51983724476@s.whatsapp.net', ...]
+   *       backgroundColor?: string,           // e.g. '#FF5733'
+   *       font?: number }                     // 0..6 per WA font index
+   *   { type: 'image'|'video', image|video: {link|data}, caption?, statusJidList, backgroundColor?, font? }
+   */
+  async sendStatus(channelId: string, payload: any): Promise<any> {
+    const sock = this.connections.get(channelId);
+    if (!sock) {
+      throw new Error(`Channel ${channelId} is not connected`);
+    }
+
+    const {
+      type,
+      text,
+      image,
+      video,
+      audio,
+      caption,
+      statusJidList,
+      backgroundColor,
+      font,
+    } = payload ?? {};
+
+    if (!Array.isArray(statusJidList) || statusJidList.length === 0) {
+      throw new Error(
+        '"statusJidList" must be a non-empty array of JIDs (e.g. ["51983724476@s.whatsapp.net"])',
+      );
+    }
+
+    // Each entry must be a fully-qualified phone JID — formatJid normalizes
+    // bare numbers so callers can pass `"51983724476"` or the full form.
+    const normalizedJidList = statusJidList.map((jid: string) =>
+      formatJid(jid),
+    );
+
+    let content: any;
+    switch (type) {
+      case 'text': {
+        if (!text || typeof text !== 'string') {
+          throw new Error('"text" string is required for status type "text"');
+        }
+        content = { text };
+        break;
+      }
+      case 'image': {
+        if (!image?.link && !image?.data) {
+          throw new Error('"image.link" or "image.data" is required');
+        }
+        content = { image: resolveMediaSource(image, 'image'), caption };
+        break;
+      }
+      case 'video': {
+        if (!video?.link && !video?.data) {
+          throw new Error('"video.link" or "video.data" is required');
+        }
+        content = { video: resolveMediaSource(video, 'video'), caption };
+        break;
+      }
+      case 'audio': {
+        if (!audio?.link && !audio?.data) {
+          throw new Error('"audio.link" or "audio.data" is required');
+        }
+        content = { audio: resolveMediaSource(audio, 'audio') };
+        break;
+      }
+      default:
+        throw new Error(
+          `Unsupported status type: "${type}" — expected text|image|video|audio`,
+        );
+    }
+
+    const options: any = {
+      statusJidList: normalizedJidList,
+      broadcast: true,
+    };
+    if (backgroundColor) options.backgroundColor = backgroundColor;
+    if (font !== undefined && font !== null) options.font = font;
+
+    console.log(
+      `📰 Posting WhatsApp Status from ${channelId} type=${type} to ${normalizedJidList.length} recipient(s)`,
+    );
+
+    const sendResult: any = await sock.sendMessage(
+      'status@broadcast',
+      content,
+      options,
+    );
+
+    const statusMessageId = sendResult?.key?.id ?? null;
+    console.log(
+      `✅ Status posted from ${channelId} (msgId=${statusMessageId ?? 'unknown'})`,
+    );
+
+    return {
+      ok: true,
+      messageId: statusMessageId,
+      statusJidList: normalizedJidList,
+      type,
+    };
   }
 }
 

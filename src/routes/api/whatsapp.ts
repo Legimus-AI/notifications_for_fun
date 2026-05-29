@@ -43,6 +43,15 @@ router.post(
 );
 
 //
+// Status / Story Routes
+//
+
+router.post(
+  '/channels/:channelId/status',
+  whatsAppController.sendStatus,
+);
+
+//
 // Contact Utility Routes
 //
 

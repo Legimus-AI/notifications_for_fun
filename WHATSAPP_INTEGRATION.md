@@ -235,6 +235,105 @@ socket.on('message_status_update', (data) => {
 - **`error`** - Connection failed
 - **`logged_out`** - User logged out from WhatsApp
 
+## Publishing WhatsApp Status (Stories)
+
+Endpoint to publish a 24h Status visible only to the JIDs in `statusJidList`
+(WhatsApp does NOT support "post to all contacts" — you choose the audience
+per post). Useful for personalized broadcast campaigns, drops, or auto-
+generated content from an AI agent.
+
+```
+POST /api/whatsapp/channels/{channelId}/status
+```
+
+### Supported types (verified end-to-end against Baileys 7.0.0-rc13)
+
+| Type | Payload shape | Notes |
+|------|---------------|-------|
+| `text` | `{type, text, statusJidList, backgroundColor?, font?}` | Solid-color status. `backgroundColor` is hex (`#075E54`). `font` is a Baileys index `0..6` (0=System, 1=SansSerif, 2=Serif, 3=Norican, 4=Bryndan, 5=BebasNeue, 6=Oswald). |
+| `image` | `{type, image: {link|data}, caption?, statusJidList}` | Image hosted at URL or base64. Caption renders as overlay text. |
+| `video` | `{type, video: {link|data}, caption?, statusJidList}` | MP4 H.264 ≤30s recommended. Larger videos may be rejected by WhatsApp at render time. |
+| `audio` | `{type, audio: {link|data}, statusJidList}` | Audio Status. Note: WhatsApp historically didn't surface audio in Status — rendering depends on recipient's WA version. |
+
+### `statusJidList` shape
+
+Array of recipient JIDs in the form `<phone>@s.whatsapp.net`:
+
+```json
+"statusJidList": [
+  "51983724476@s.whatsapp.net",
+  "56941174851@s.whatsapp.net"
+]
+```
+
+You can also pass bare phones (`"51983724476"`) — the service normalizes
+via `formatJid()` before delivering to Baileys.
+
+### Examples
+
+**Text status (colored background + custom font):**
+```bash
+curl -X POST 'https://api-notifications.legimus.ai/api/whatsapp/channels/<channelId>/status' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "text",
+    "text": "🚀 Drop nuevo hoy 8 PM",
+    "statusJidList": ["51983724476@s.whatsapp.net"],
+    "backgroundColor": "#075E54",
+    "font": 2
+  }'
+```
+
+**Image status:**
+```bash
+curl -X POST 'https://api-notifications.legimus.ai/api/whatsapp/channels/<channelId>/status' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "image",
+    "image": {"link": "https://example.com/promo.jpg"},
+    "caption": "Black Friday — 40% OFF",
+    "statusJidList": ["51983724476@s.whatsapp.net"]
+  }'
+```
+
+**Video status:**
+```bash
+curl -X POST 'https://api-notifications.legimus.ai/api/whatsapp/channels/<channelId>/status' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "video",
+    "video": {"link": "https://example.com/teaser.mp4"},
+    "caption": "Sneak peek",
+    "statusJidList": ["51983724476@s.whatsapp.net"]
+  }'
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "payload": {
+    "ok": true,
+    "messageId": "3EB0FD461297C209CE7433",
+    "statusJidList": ["51983724476@s.whatsapp.net"],
+    "type": "text"
+  }
+}
+```
+
+### Operational notes
+
+- **Audience scoping:** WhatsApp requires `statusJidList` to be a known
+  audience. Posting to a JID the bot has never spoken to may silently
+  fail at render time even if the backend reports success.
+- **Status lifetime:** 24 hours, per WhatsApp protocol (no override).
+- **Rate limits:** No per-channel SLA published; observe ≥1 post / minute
+  to avoid anti-spam heuristics.
+- **Status doesn't fire `messages.update` for delivery/read** — Baileys
+  emits a dedicated `messaging-history.status` event for Status view
+  counts, currently NOT subscribed by this service. Add later if needed.
+
 ## Message Status Codes & Webhook Events
 
 Outbound messages emit a `message_status_update` Socket.io event AND fire a
