@@ -761,6 +761,7 @@ export class WhatsAppService extends EventEmitter {
         try {
           const channelDoc = await Channel.findOne({ channelId });
           const phoneFromConfig = (channelDoc?.config as WhatsAppAutomatedConfig)?.phoneNumber;
+          const now = new Date();
           this.sendToWebhooks(channelId, 'channel.disconnected', {
             channelId,
             phoneNumber: phoneFromConfig ?? phoneNumber ?? null,
@@ -769,7 +770,8 @@ export class WhatsAppService extends EventEmitter {
             statusCode: disconnectStatusCode ?? null,
             message: disconnectMessage,
             willReconnect: false,
-            disconnectedAt: new Date().toISOString(),
+            disconnectedAt: now.toISOString(),
+            disconnectedAtPe: formatPeruDateTime(now),
           });
         } catch (err) {
           console.error(`❌ Failed to fire channel.disconnected for ${channelId}:`, err);
@@ -3132,6 +3134,24 @@ export function renderWebhookBody(
   } catch {
     return { body: rendered, contentType: 'text/plain; charset=utf-8' };
   }
+}
+
+export // Format a Date in Lima time (America/Lima, no DST) for human-facing webhook
+// payloads. Output: "29/05/2026 10:43:48" — locale es-PE, 24h, no timezone
+// suffix (the field name carries the tz). Used in {{disconnectedAtPe}}.
+export function formatPeruDateTime(d: Date): string {
+  const parts = new Intl.DateTimeFormat('es-PE', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 export function mapToObject(

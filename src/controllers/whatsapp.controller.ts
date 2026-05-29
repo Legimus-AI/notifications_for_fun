@@ -8,6 +8,7 @@ import {
   whatsAppService,
   renderWebhookBody,
   mapToObject,
+  formatPeruDateTime,
 } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
 import { handleError, formatJid } from '../helpers/utils';
@@ -1101,6 +1102,7 @@ class WhatsAppController {
       // Build a synthetic payload — same shape the live dispatcher emits.
       // Add a new branch here when introducing a new event type.
       const phoneNumber = (channel.config as WhatsAppAutomatedConfig)?.phoneNumber;
+      const sampleNow = new Date();
       const samples: Record<string, any> = {
         'channel.disconnected': {
           channelId,
@@ -1110,7 +1112,8 @@ class WhatsAppController {
           statusCode: 401,
           message: '(test) sample disconnect payload',
           willReconnect: false,
-          disconnectedAt: new Date().toISOString(),
+          disconnectedAt: sampleNow.toISOString(),
+          disconnectedAtPe: formatPeruDateTime(sampleNow),
         },
         'channel.credentials_changed': {
           channelId,
