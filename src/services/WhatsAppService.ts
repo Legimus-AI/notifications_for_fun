@@ -263,6 +263,20 @@ export class WhatsAppService extends EventEmitter {
       checkperiod: 3600, // Check for expired keys every 1 hour
       useClones: false, // Don't clone objects for better performance
     });
+
+    // Memory heartbeat — one structured, greppable line every 5 min so heap
+    // creep (residual / Baileys-internal leak #2090/#2104) is visible OVER TIME
+    // in the logs without re-bloating them. Pairs with GET /health_check/channels
+    // for live state. .unref() so it never keeps the process alive on shutdown.
+    setInterval(() => {
+      const mem = process.memoryUsage();
+      console.log(
+        `🧠 [heartbeat] rss=${Math.round(mem.rss / 1048576)}mb ` +
+          `heapUsed=${Math.round(mem.heapUsed / 1048576)}mb ` +
+          `sockets=${this.connections.size} ` +
+          `reconnecting=${this.reconnectAttempts.size}`,
+      );
+    }, 5 * 60 * 1000).unref();
   }
 
   /**
