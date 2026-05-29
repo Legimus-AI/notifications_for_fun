@@ -52,6 +52,26 @@ export const MAX_HEAL_ATTEMPTS = 3;
 export const HEAL_RECHECK_DELAY_MS = 10_000;
 
 /**
+ * Maximum reconnect attempts for a recoverable 401 conflict
+ * (conflict / replaced / Connection Failure with auth still present).
+ * On the (cap+1)th attempt the channel is escalated to logged_out + webhook.
+ */
+export const MAX_CONFLICT_RECONNECTS = 5;
+
+/**
+ * Exponential backoff (with capped tail) for conflict reconnects, in ms.
+ * Indexed by attempt number (0-based). Past the array length the last value
+ * is reused.
+ */
+export const CONFLICT_BACKOFF_MS = [15_000, 30_000, 60_000, 120_000, 300_000];
+
+/**
+ * Default delay before reconnecting after a transitory disconnect
+ * (network blip, 428/408/503/515). Kept short to recover fast.
+ */
+export const TRANSITORY_RECONNECT_DELAY_MS = 5_000;
+
+/**
  * Reasons that should NOT be auto-healed.
  *
  * Two categories:

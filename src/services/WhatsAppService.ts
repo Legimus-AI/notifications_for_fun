@@ -29,6 +29,11 @@ import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
+import {
+  MAX_CONFLICT_RECONNECTS,
+  CONFLICT_BACKOFF_MS,
+  TRANSITORY_RECONNECT_DELAY_MS,
+} from '../config/healthCheck.config';
 
 /**
  * Resolve a media payload into a Baileys-compatible source.
@@ -231,6 +236,13 @@ export class WhatsAppService extends EventEmitter {
   private phoneValidationCache: NodeCache;
   private preloadAttempts: Map<string, number> = new Map(); // Track preload attempts per channel
   private lastPreloadAttempt: Map<string, number> = new Map(); // Track last preload timestamp
+  // T3: track conflict-recoverable reconnect attempts so we can apply backoff
+  // and cap to MAX_CONFLICT_RECONNECTS before escalating to logged_out.
+  private reconnectAttempts: Map<string, number> = new Map();
+  // T8: track pending reconnect timers so teardownSocket can cancel a stale
+  // setTimeout before a new socket is spawned (otherwise concurrent sockets
+  // pile up → conflict + listener leak → heap OOM).
+  private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
 
   constructor() {
     super();
@@ -740,28 +752,33 @@ export class WhatsAppService extends EventEmitter {
         );
       }
 
-      this.connections.delete(channelId);
+      // T8: tear down the dead socket COMPLETELY before deciding what to do
+      // next. The socket has already fired 'close', but its event listeners
+      // (closures over `this`, auth.creds, the socket) remain referenced —
+      // across 1894 reconnects this leaked ~6GB → FATAL OOM. teardownSocket
+      // also clears any pending reconnect timer so we don't pile up sockets.
+      const deadSock = this.connections.get(channelId);
+      this.teardownSocket(channelId, deadSock);
 
-      const shouldReconnect =
-        disconnectStatusCode !== DisconnectReason.loggedOut &&
-        disconnectStatusCode !== DisconnectReason.connectionReplaced;
+      // T3: classify the close into one of three buckets so we stop treating
+      // every 401 as terminal. A 401 with a `conflict`/`replaced` message means
+      // another device picked up the session (or our own previous OOM-restart
+      // left a ghost slot) — creds are still valid, retry with backoff. Only
+      // device_removed / forbidden / badSession / a plain 401 are truly
+      // terminal (need QR re-pair).
+      const msg = (disconnectMessage || '').toLowerCase();
+      const isConflict =
+        disconnectStatusCode === DisconnectReason.connectionReplaced ||
+        (disconnectStatusCode === DisconnectReason.loggedOut &&
+          /(conflict|replaced|connection failure)/.test(msg) &&
+          !/device_removed/.test(msg));
+      const isTerminal =
+        /device_removed/.test(msg) ||
+        disconnectStatusCode === 403 ||
+        disconnectStatusCode === DisconnectReason.badSession ||
+        (disconnectStatusCode === DisconnectReason.loggedOut && !isConflict);
 
-      if (shouldReconnect) {
-        console.log(`🔄 Reconnecting ${channelId}...`);
-        await this.updateChannelStatus(channelId, 'connecting');
-        // Reconnect after 5 seconds
-        setTimeout(() => this.connectChannel(channelId, phoneNumber), 5000);
-      } else {
-        console.log(`🚪 ${channelId} logged out`);
-        await this.updateChannelStatus(channelId, 'logged_out');
-        // WHY: connectedAt drives the "Connected since" UI marker; leaving it
-        // set makes a logged-out channel look connected. Clear it on logout.
-        await this.updateChannelConfig(channelId, { connectedAt: null });
-
-        // Fire channel.disconnected webhook only on terminal disconnects (logout
-        // or connectionReplaced). Other closes are transitory (restartRequired
-        // 515 after pairing, network blips) and reconnect by themselves —
-        // alerting on those would be noisy.
+      const fireTerminalDisconnectedWebhook = async () => {
         try {
           const channelDoc = await Channel.findOne({ channelId });
           const phoneFromConfig = (channelDoc?.config as WhatsAppAutomatedConfig)?.phoneNumber;
@@ -780,6 +797,52 @@ export class WhatsAppService extends EventEmitter {
         } catch (err) {
           console.error(`❌ Failed to fire channel.disconnected for ${channelId}:`, err);
         }
+      };
+
+      if (isTerminal) {
+        console.log(`🚪 ${channelId} logged out (terminal: ${disconnectReasonName})`);
+        this.reconnectAttempts.delete(channelId);
+        await this.updateChannelStatus(channelId, 'logged_out');
+        // WHY: connectedAt drives the "Connected since" UI marker; leaving it
+        // set makes a logged-out channel look connected. Clear it on logout.
+        await this.updateChannelConfig(channelId, { connectedAt: null });
+        await fireTerminalDisconnectedWebhook();
+      } else if (isConflict) {
+        const attempt = this.reconnectAttempts.get(channelId) ?? 0;
+        if (attempt >= MAX_CONFLICT_RECONNECTS) {
+          // Conflict reconnect budget exhausted → escalate to terminal so a
+          // human re-pairs by QR instead of looping forever.
+          console.log(
+            `🚪 ${channelId} conflict reconnect budget exhausted (${attempt}/${MAX_CONFLICT_RECONNECTS}) — escalating to logged_out`,
+          );
+          this.reconnectAttempts.delete(channelId);
+          await this.updateChannelStatus(channelId, 'logged_out');
+          await this.updateChannelConfig(channelId, { connectedAt: null });
+          await fireTerminalDisconnectedWebhook();
+        } else {
+          const next = attempt + 1;
+          this.reconnectAttempts.set(channelId, next);
+          const delay =
+            CONFLICT_BACKOFF_MS[Math.min(attempt, CONFLICT_BACKOFF_MS.length - 1)];
+          console.log(
+            `🔁 ${channelId} conflict recoverable, attempt ${next}/${MAX_CONFLICT_RECONNECTS} in ${delay}ms`,
+          );
+          await this.updateChannelStatus(channelId, 'connecting');
+          const t = setTimeout(
+            () => this.connectChannel(channelId, phoneNumber),
+            delay,
+          );
+          this.reconnectTimers.set(channelId, t);
+        }
+      } else {
+        // Transitory (428/408/503/515/network blip): reconnect fast.
+        console.log(`🔄 Reconnecting ${channelId} (transitory ${disconnectReasonName})...`);
+        await this.updateChannelStatus(channelId, 'connecting');
+        const t = setTimeout(
+          () => this.connectChannel(channelId, phoneNumber),
+          TRANSITORY_RECONNECT_DELAY_MS,
+        );
+        this.reconnectTimers.set(channelId, t);
       }
     }
 
@@ -787,6 +850,17 @@ export class WhatsAppService extends EventEmitter {
       console.log(`✅ ${channelId} connected successfully`);
       await this.updateChannelStatus(channelId, 'active');
       this.connectionStatus.set(channelId, 'active');
+
+      // T3/T8: success → drop conflict-attempt counter so the next future
+      // disconnect starts with a fresh backoff budget, and clear any pending
+      // reconnect timer that may have fired late after a successful manual
+      // /connect call.
+      this.reconnectAttempts.delete(channelId);
+      const pendingTimer = this.reconnectTimers.get(channelId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.reconnectTimers.delete(channelId);
+      }
 
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);
@@ -1993,6 +2067,62 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
+   * Tear down a socket COMPLETELY so V8 can GC it. Just calling sock.end()
+   * leaves the event listeners (which capture `this`, the auth.creds Signal-key
+   * Map, and the socket itself) reachable. Across 1000s of reconnect cycles in
+   * production this leaks ~6GB of heap → FATAL "Reached heap limit" → no-graceful
+   * restart → device-slot stays alive in WhatsApp → 401 <conflict replaced/>
+   * cascade → channel marked logged_out. Always go through this helper when
+   * discarding a socket.
+   *
+   * Also clears any pending reconnect timer for the channel so concurrent
+   * reconnects don't pile up two sockets at once (another conflict cause).
+   */
+  private teardownSocket(channelId: string, sock?: WASocket): void {
+    const target = sock ?? this.connections.get(channelId);
+    this.connections.delete(channelId);
+
+    const timer = this.reconnectTimers.get(channelId);
+    if (timer) {
+      clearTimeout(timer);
+      this.reconnectTimers.delete(channelId);
+    }
+
+    if (!target) return;
+
+    // CRITICAL: breaks the closures that retain `this`, `auth.creds` and the
+    // socket itself across the EventEmitter — without this V8 can't GC them.
+    // BaileysEventEmitter is strictly typed: removeAllListeners requires the
+    // event name. Iterate the 7 events we register in connectChannel.
+    const ourEvents = [
+      'connection.update',
+      'creds.update',
+      'messages.upsert',
+      'messages.update',
+      'groups.update',
+      'call',
+      'lid-mapping.update',
+    ] as const;
+    for (const ev of ourEvents) {
+      try {
+        target.ev.removeAllListeners(ev);
+      } catch (_e) {
+        /* noop: emitter may already be torn down */
+      }
+    }
+    try {
+      target.ws?.close();
+    } catch (_e) {
+      /* noop: ws may already be closed */
+    }
+    try {
+      target.end(undefined);
+    } catch (_e) {
+      /* noop: end() throws if already ended */
+    }
+  }
+
+  /**
    * Resets socket connection without clearing auth state (no QR needed on reconnect)
    */
   async resetSocketConnection(channelId: string): Promise<void> {
@@ -2003,23 +2133,16 @@ export class WhatsAppService extends EventEmitter {
 
       const sock = this.connections.get(channelId);
       if (sock) {
-        // Remove from connections map to prevent new events from being processed
-        this.connections.delete(channelId);
-
-        // Update memory status to indicate reset
+        // Update memory status to indicate reset BEFORE teardown so any
+        // in-flight callback observing this state takes the resetting branch.
         this.connectionStatus.set(channelId, 'resetting');
 
-        try {
-          // Just end the socket connection without logout (preserves auth state)
-          sock.end(undefined);
-          console.log(`🔌 Socket connection ended for channel: ${channelId}`);
-        } catch (endError) {
-          console.warn(
-            `⚠️ Error ending socket for channel ${channelId}:`,
-            endError,
-          );
-          // Continue with cleanup even if end fails
-        }
+        // T8: removes listeners + closes ws + ends socket + cancels pending
+        // reconnect timer. The previous code only called sock.end() which left
+        // every event listener (and its captured `this`/auth-creds) reachable
+        // → ~6GB heap leak across 1894 reconnects → FATAL OOM.
+        this.teardownSocket(channelId, sock);
+        console.log(`🔌 Socket fully torn down for channel: ${channelId}`);
 
         // Update database status
         await this.updateChannelStatus(channelId, 'reset');
@@ -2051,14 +2174,11 @@ export class WhatsAppService extends EventEmitter {
 
       const sock = this.connections.get(channelId);
       if (sock) {
-        // First remove from connections map to prevent new events from being processed
-        this.connections.delete(channelId);
-
         // Update memory status to prevent event processing
         this.connectionStatus.set(channelId, 'disconnecting');
 
         try {
-          // Gracefully logout from WhatsApp
+          // Gracefully logout from WhatsApp (releases device slot)
           await sock.logout();
           console.log(
             `📱 Successfully logged out from WhatsApp for channel: ${channelId}`,
@@ -2070,6 +2190,11 @@ export class WhatsAppService extends EventEmitter {
           );
           // Continue with cleanup even if logout fails
         }
+
+        // T8: even after logout(), the socket's listeners still hold `this` +
+        // auth.creds. Tear them down explicitly so V8 can reclaim the memory.
+        this.teardownSocket(channelId, sock);
+        this.reconnectAttempts.delete(channelId);
 
         // Clean up memory status
         this.connectionStatus.delete(channelId);
