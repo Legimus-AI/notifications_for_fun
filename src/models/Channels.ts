@@ -79,6 +79,9 @@ export interface IWebhook extends Document {
   headers?: Map<string, string>;
   // method: HTTP verb to use. Default POST.
   method?: 'POST' | 'PUT';
+  // timezone: IANA tz name used to auto-localize every payload "<key>At" into
+  // a sibling "<key>Local". Default 'UTC'.
+  timezone?: string;
 }
 
 export type ChannelConfig =
@@ -205,6 +208,14 @@ const ChannelSchema = new Schema(
             type: String,
             enum: ['POST', 'PUT'],
             default: 'POST',
+          },
+          // IANA timezone (e.g. "America/Lima", "Europe/Madrid"). When set,
+          // the dispatcher auto-adds a "<key>Local" sibling for every payload
+          // timestamp key ending in "At". Default UTC keeps existing webhooks
+          // unchanged (they get xxxAtLocal in UTC too — no breakage).
+          timezone: {
+            type: String,
+            default: 'UTC',
           },
         },
         {

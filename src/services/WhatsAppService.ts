@@ -761,7 +761,6 @@ export class WhatsAppService extends EventEmitter {
         try {
           const channelDoc = await Channel.findOne({ channelId });
           const phoneFromConfig = (channelDoc?.config as WhatsAppAutomatedConfig)?.phoneNumber;
-          const now = new Date();
           this.sendToWebhooks(channelId, 'channel.disconnected', {
             channelId,
             phoneNumber: phoneFromConfig ?? phoneNumber ?? null,
@@ -770,8 +769,9 @@ export class WhatsAppService extends EventEmitter {
             statusCode: disconnectStatusCode ?? null,
             message: disconnectMessage,
             willReconnect: false,
-            disconnectedAt: now.toISOString(),
-            disconnectedAtPe: formatPeruDateTime(now),
+            disconnectedAt: new Date().toISOString(),
+            // disconnectedAtLocal is auto-added per-webhook by withLocalTimestamps
+            // using webhook.timezone (default UTC). See sendWebhookWithRetry.
           });
         } catch (err) {
           console.error(`❌ Failed to fire channel.disconnected for ${channelId}:`, err);
@@ -1084,7 +1084,10 @@ export class WhatsAppService extends EventEmitter {
 
     // Apply optional template + custom headers/method when present on the webhook.
     // Backward compatible: empty fields → legacy JSON-passthrough POST.
-    const { body, contentType } = renderWebhookBody(webhook, payload, channelId, event);
+    // Auto-localize timestamps: each `xxxAt` ISO string in the payload gets a
+    // sibling `xxxAtLocal` formatted in webhook.timezone (default UTC).
+    const localizedPayload = withLocalTimestamps(payload, webhook.timezone || 'UTC');
+    const { body, contentType } = renderWebhookBody(webhook, localizedPayload, channelId, event);
     const method = (webhook.method || 'POST').toUpperCase();
     const customHeaders = mapToObject(webhook.headers);
 
@@ -3136,22 +3139,50 @@ export function renderWebhookBody(
   }
 }
 
-export // Format a Date in Lima time (America/Lima, no DST) for human-facing webhook
-// payloads. Output: "29/05/2026 10:43:48" — locale es-PE, 24h, no timezone
-// suffix (the field name carries the tz). Used in {{disconnectedAtPe}}.
-export function formatPeruDateTime(d: Date): string {
-  const parts = new Intl.DateTimeFormat('es-PE', {
-    timeZone: 'America/Lima',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(d);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
+// Format a Date in the given IANA timezone as "DD/MM/YYYY HH:mm:ss" (24h).
+// Used by the dispatcher to auto-add a "<key>Local" sibling for every payload
+// timestamp key ending in "At", per the webhook's `timezone` setting.
+// Falls back to UTC if the timezone is invalid.
+export function formatDateInTimezone(d: Date, timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('es', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    return `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
+  } catch {
+    return d.toISOString();
+  }
+}
+
+// Detect ISO 8601 timestamp strings to auto-localize. Strict-ish — avoids
+// false positives like "createdAt": "now" (which would be returned as-is).
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;
+
+// For every payload key ending in "At" that holds an ISO date, add a sibling
+// "<key>Local" formatted in the webhook's timezone. Mutation-free.
+export function withLocalTimestamps(
+  payload: Record<string, any>,
+  timezone: string,
+): Record<string, any> {
+  const out = { ...payload };
+  for (const [key, value] of Object.entries(payload)) {
+    if (!key.endsWith('At') || typeof value !== 'string') continue;
+    if (!ISO_DATETIME_RE.test(value)) continue;
+    const localKey = `${key}Local`;
+    if (localKey in out) continue; // don't overwrite a manually-set field
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) continue;
+    out[localKey] = formatDateInTimezone(date, timezone);
+  }
+  return out;
 }
 
 export function mapToObject(

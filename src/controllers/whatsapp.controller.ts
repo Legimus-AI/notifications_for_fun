@@ -8,7 +8,7 @@ import {
   whatsAppService,
   renderWebhookBody,
   mapToObject,
-  formatPeruDateTime,
+  withLocalTimestamps,
 } from '../services/WhatsAppService';
 import mongoose from 'mongoose';
 import { handleError, formatJid } from '../helpers/utils';
@@ -1102,7 +1102,6 @@ class WhatsAppController {
       // Build a synthetic payload — same shape the live dispatcher emits.
       // Add a new branch here when introducing a new event type.
       const phoneNumber = (channel.config as WhatsAppAutomatedConfig)?.phoneNumber;
-      const sampleNow = new Date();
       const samples: Record<string, any> = {
         'channel.disconnected': {
           channelId,
@@ -1112,8 +1111,8 @@ class WhatsAppController {
           statusCode: 401,
           message: '(test) sample disconnect payload',
           willReconnect: false,
-          disconnectedAt: sampleNow.toISOString(),
-          disconnectedAtPe: formatPeruDateTime(sampleNow),
+          disconnectedAt: new Date().toISOString(),
+          // disconnectedAtLocal auto-added by withLocalTimestamps using webhook.timezone
         },
         'channel.credentials_changed': {
           channelId,
@@ -1138,9 +1137,15 @@ class WhatsAppController {
         note: 'no sample template for this event — using minimal payload',
       };
 
+      // Match what sendWebhookWithRetry does in the live dispatch path so the
+      // test endpoint surfaces the exact rendered body the live event would.
+      const localizedPayload = withLocalTimestamps(
+        samplePayload,
+        (webhook as any).timezone || 'UTC',
+      );
       const { body, contentType } = renderWebhookBody(
         webhook,
-        samplePayload,
+        localizedPayload,
         channelId,
         event,
       );
@@ -1201,7 +1206,7 @@ class WhatsAppController {
             ...customHeaders,
           },
         },
-        samplePayload,
+        samplePayload: localizedPayload,
         response: {
           statusCode: result.statusCode ?? null,
           body: result.responseBody ?? null,
