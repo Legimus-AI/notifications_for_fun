@@ -635,10 +635,12 @@ export class WhatsAppService extends EventEmitter {
 
       // Handle LID mapping updates (Baileys 7 requirement)
       sock.ev.on('lid-mapping.update', async (mapping) => {
-        console.log(
-          `🔄 LID mapping update for channel ${channelId}:`,
-          JSON.stringify(mapping, null, 2),
-        );
+        if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+          console.log(
+            `🔄 LID mapping update for channel ${channelId}:`,
+            JSON.stringify(mapping, null, 2),
+          );
+        }
         // LID mappings are automatically stored in sock.signalRepository.lidMapping
         // You can access them via:
         // - sock.signalRepository.lidMapping.getLIDForPN(pn)
@@ -727,14 +729,16 @@ export class WhatsAppService extends EventEmitter {
       console.log(
         `📴 ${channelId} disconnect | statusCode=${disconnectStatusCode} reason=${disconnectReasonName} message="${disconnectMessage}"`,
       );
-      console.log(
-        `📴 ${channelId} disconnect raw:`,
-        JSON.stringify({
-          payload: disconnectError?.output?.payload,
-          data: disconnectError?.data,
-          isBoom: disconnectError?.isBoom,
-        }),
-      );
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(
+          `📴 ${channelId} disconnect raw:`,
+          JSON.stringify({
+            payload: disconnectError?.output?.payload,
+            data: disconnectError?.data,
+            isBoom: disconnectError?.isBoom,
+          }),
+        );
+      }
 
       this.connections.delete(channelId);
 
@@ -862,21 +866,23 @@ export class WhatsAppService extends EventEmitter {
     // Check if remoteJid is a LID (@lid)
     if (jid && /@lid/.test(jid)) {
       console.log(`🔍 LID detected in remoteJid: ${jid}`);
-      console.log(
-        `📋 Message key details:`,
-        JSON.stringify(
-          {
-            remoteJid: message.key.remoteJid,
-            remoteJidAlt: message.key.remoteJidAlt,
-            participant: message.key.participant,
-            participantAlt: message.key.participantAlt,
-            fromMe: message.key.fromMe,
-            pushName: message.pushName,
-          },
-          null,
-          2,
-        ),
-      );
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(
+          `📋 Message key details:`,
+          JSON.stringify(
+            {
+              remoteJid: message.key.remoteJid,
+              remoteJidAlt: message.key.remoteJidAlt,
+              participant: message.key.participant,
+              participantAlt: message.key.participantAlt,
+              fromMe: message.key.fromMe,
+              pushName: message.pushName,
+            },
+            null,
+            2,
+          ),
+        );
+      }
 
       // For DMs: use senderPn (remoteJidAlt in message key)
       if (message.key.remoteJidAlt) {
@@ -1045,17 +1051,28 @@ export class WhatsAppService extends EventEmitter {
       // Skip if message is from us
       if (message.key.fromMe) continue;
 
+      // Structured one-line log; full payload only when DEBUG_BAILEYS_PAYLOADS=true
+      // (default-off avoids the 7.3GB out.log that caused disk pressure).
+      const msgIdShort = message.key?.id ?? 'n/a';
+      const fromShort = message.key?.remoteJid ?? 'n/a';
       console.log(
-        `📨 Incoming message for ${channelId}:`,
-        JSON.stringify(message, null, 2),
+        `📨 ${channelId} msg id=${msgIdShort} from=${fromShort} fromMe=${message.key?.fromMe}`,
       );
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(
+          `📨 Incoming message for ${channelId}:`,
+          JSON.stringify(message, null, 2),
+        );
+      }
 
       // Format message to webhook payload format
       const payload = await this.formatMessageToWebhookPayload(
         channelId,
         message,
       );
-      console.log(JSON.stringify(payload, null, 2));
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(JSON.stringify(payload, null, 2));
+      }
 
       // Emit message event with formatted payload
       this.emit('message', channelId, payload);
@@ -1585,10 +1602,18 @@ export class WhatsAppService extends EventEmitter {
     }
 
     for (const update of updates) {
+      const updIdShort = update.key?.id ?? 'n/a';
+      const updRemoteShort = update.key?.remoteJid ?? 'n/a';
+      const updStatusShort = (update as { update?: { status?: unknown } })?.update?.status ?? 'n/a';
       console.log(
-        `📊 Message status update for ${channelId}:`,
-        JSON.stringify(update, null, 2),
+        `📊 ${channelId} status id=${updIdShort} to=${updRemoteShort} status=${String(updStatusShort)}`,
       );
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(
+          `📊 Message status update for ${channelId}:`,
+          JSON.stringify(update, null, 2),
+        );
+      }
 
       // Resolve LID to PN if present in remoteJid
       if (update.key?.remoteJid) {
@@ -1607,7 +1632,9 @@ export class WhatsAppService extends EventEmitter {
         channelId,
         update,
       );
-      console.log('📊 Formatted status', JSON.stringify(payload, null, 2));
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log('📊 Formatted status', JSON.stringify(payload, null, 2));
+      }
 
       if (payload) {
         // Emit status update event
@@ -1664,10 +1691,18 @@ export class WhatsAppService extends EventEmitter {
     }
 
     for (const callEvent of callEvents) {
+      const callIdShort = (callEvent as { id?: string })?.id ?? 'n/a';
+      const callFromShort = (callEvent as { from?: string })?.from ?? 'n/a';
+      const callStatusShort = (callEvent as { status?: string })?.status ?? 'n/a';
       console.log(
-        `📞 Incoming call for ${channelId}:`,
-        JSON.stringify(callEvent, null, 2),
+        `📞 ${channelId} call id=${callIdShort} from=${callFromShort} status=${callStatusShort}`,
       );
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log(
+          `📞 Incoming call for ${channelId}:`,
+          JSON.stringify(callEvent, null, 2),
+        );
+      }
 
       // Save call event to database
       await WhatsAppEvents.create({ channelId, payload: callEvent });
@@ -1677,7 +1712,9 @@ export class WhatsAppService extends EventEmitter {
         channelId,
         callEvent,
       );
-      console.log('Call payload formatted:', JSON.stringify(payload, null, 2));
+      if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
+        console.log('Call payload formatted:', JSON.stringify(payload, null, 2));
+      }
       if (payload) {
         // Emit call event
         this.emit('call', channelId, payload);
