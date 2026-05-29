@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { manualHealthCheck } from '../cronjobs/WhatsAppHealthCheckCron';
 import * as utils from '../helpers/utils';
+import { channelMetrics } from '../services/ChannelMetricsService';
 
 /**
  * Controller for WhatsApp Health Check
@@ -110,6 +111,33 @@ class HealthCheckController {
     // This endpoint does the same as checkWhatsAppHealth
     // Just a shorter alias for convenience
     return this.checkWhatsAppHealth(req, res);
+  };
+
+  /**
+   * Per-channel connection metrics + process health.
+   * GET /api/health_check/channels
+   * Reads the in-memory ChannelMetricsService snapshot (no Mongo round-trip).
+   */
+  public getChannelMetrics = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const mem = process.memoryUsage();
+      res.status(200).json({
+        ok: true,
+        timestamp: new Date().toISOString(),
+        process: {
+          uptimeSeconds: Math.round(process.uptime()),
+          rssMb: Math.round(mem.rss / 1024 / 1024),
+          heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+        },
+        channels: channelMetrics.getSnapshot(),
+      });
+    } catch (error) {
+      console.error('❌ Error fetching channel metrics:', error);
+      utils.handleError(res, error);
+    }
   };
 }
 

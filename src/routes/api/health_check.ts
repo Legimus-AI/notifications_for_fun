@@ -35,4 +35,16 @@ router.get(
   healthCheckController.getHealthCheckStatus,
 );
 
+/**
+ * @route   GET /api/health_check/channels
+ * @desc    Per-channel connection metrics (status, lastStatusCode, reconnectCount,
+ *          connectedSince, lastDisconnectAt) + process uptime/memory.
+ * @access  Public
+ */
+router.get(
+  '/channels',
+  // passport.authenticate('jwt', { session: false }),
+  healthCheckController.getChannelMetrics,
+);
+
 export default router;
