@@ -9,6 +9,7 @@ export { default as ForgotPassword } from './ForgotPassword';
 export { default as UserAccess } from './UserAccess';
 export { WhatsAppAuthState, WhatsAppAuthKey } from './WhatsAppAuthState';
 export { default as WhatsAppEvents } from './WhatsAppEvents';
+export { default as ChannelConnectionEvents } from './ChannelConnectionEvents';
 export { default as SlackEvents } from './SlackEvents';
 
 // Interfaces

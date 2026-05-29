@@ -34,6 +34,7 @@ import {
   CONFLICT_BACKOFF_MS,
   TRANSITORY_RECONNECT_DELAY_MS,
 } from '../config/healthCheck.config';
+import { channelMetrics } from './ChannelMetricsService';
 
 /**
  * Resolve a media payload into a Baileys-compatible source.
@@ -806,6 +807,12 @@ export class WhatsAppService extends EventEmitter {
         // WHY: connectedAt drives the "Connected since" UI marker; leaving it
         // set makes a logged-out channel look connected. Clear it on logout.
         await this.updateChannelConfig(channelId, { connectedAt: null });
+        channelMetrics.record(channelId, 'logged_out', {
+          statusCode: disconnectStatusCode ?? null,
+          reason: disconnectReasonName,
+          message: disconnectMessage,
+          status: 'logged_out',
+        });
         await fireTerminalDisconnectedWebhook();
       } else if (isConflict) {
         const attempt = this.reconnectAttempts.get(channelId) ?? 0;
@@ -818,6 +825,13 @@ export class WhatsAppService extends EventEmitter {
           this.reconnectAttempts.delete(channelId);
           await this.updateChannelStatus(channelId, 'logged_out');
           await this.updateChannelConfig(channelId, { connectedAt: null });
+          channelMetrics.record(channelId, 'logged_out', {
+            statusCode: disconnectStatusCode ?? null,
+            reason: disconnectReasonName,
+            message: disconnectMessage,
+            attempt,
+            status: 'logged_out',
+          });
           await fireTerminalDisconnectedWebhook();
         } else {
           const next = attempt + 1;
@@ -827,6 +841,13 @@ export class WhatsAppService extends EventEmitter {
           console.log(
             `🔁 ${channelId} conflict recoverable, attempt ${next}/${MAX_CONFLICT_RECONNECTS} in ${delay}ms`,
           );
+          channelMetrics.record(channelId, 'conflict', {
+            statusCode: disconnectStatusCode ?? null,
+            reason: disconnectReasonName,
+            message: disconnectMessage,
+            attempt: next,
+            status: 'connecting',
+          });
           await this.updateChannelStatus(channelId, 'connecting');
           const t = setTimeout(
             () => this.connectChannel(channelId, phoneNumber),
@@ -837,6 +858,12 @@ export class WhatsAppService extends EventEmitter {
       } else {
         // Transitory (428/408/503/515/network blip): reconnect fast.
         console.log(`🔄 Reconnecting ${channelId} (transitory ${disconnectReasonName})...`);
+        channelMetrics.record(channelId, 'reconnect', {
+          statusCode: disconnectStatusCode ?? null,
+          reason: disconnectReasonName,
+          message: disconnectMessage,
+          status: 'connecting',
+        });
         await this.updateChannelStatus(channelId, 'connecting');
         const t = setTimeout(
           () => this.connectChannel(channelId, phoneNumber),
@@ -861,6 +888,7 @@ export class WhatsAppService extends EventEmitter {
         clearTimeout(pendingTimer);
         this.reconnectTimers.delete(channelId);
       }
+      channelMetrics.record(channelId, 'open', { status: 'active' });
 
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);
