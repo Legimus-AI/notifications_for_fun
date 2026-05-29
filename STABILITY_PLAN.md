@@ -104,8 +104,10 @@ Heap snapshot del proceso vivo (`node --inspect` / `pm2 monit` + `take_heapsnaps
 | T5 — GET /health_check/channels | ✅ HECHO | `472611f` |
 | T6 — ecosystem hardening (kill_timeout/min_uptime/max_restarts) | ✅ HECHO (código) | `9c798d6` |
 | T7 — drop CallMeBot + Telegram Ghost | ✅ HECHO | `863f6a3` |
+| T8.5 — max_memory_restart (red de seguridad OOM) | ✅ HECHO | `22ab98e` |
+| T8.7 — TTL en WhatsAppEvents (bloat DB) | ✅ HECHO | `22ab98e` |
 | **T8.6 — verificación heap snapshot (curativa)** | ⏳ PENDIENTE | requiere proceso vivo + Victor |
-| **T8.7 — TTL en WhatsAppEvents (bloat DB)** | ⏳ PENDIENTE | — |
+| **Baileys rc13 → evaluar upgrade (leaks #2090/#2104)** | ⏳ PENDIENTE | post heap-snapshot |
 | **T0 — dedupe canal +56976282350 + re-pair QR** | ⏳ PENDIENTE | operación, requiere OK Victor |
 | **pm2-logrotate install + flush 7.3GB** | ⏳ PENDIENTE | operación en Mac Julian, requiere OK Victor |
 | **DEPLOY a Mac de Julian** | ⏳ PENDIENTE | requiere OK Victor |
