@@ -149,6 +149,10 @@ const itemAlreadyExists = (
 };
 
 const formatJid = (jid: string): string => {
+  // WHY: status updates from Baileys can carry `to` undefined → 850 TypeError /
+  // 292 unhandledRejections in production. Return as-is so callers see falsy.
+  if (!jid || typeof jid !== 'string') return jid;
+
   // List of valid WhatsApp JID suffixes
   const suffixes = [
     '@s.whatsapp.net',
@@ -170,6 +174,11 @@ const formatJid = (jid: string): string => {
 };
 
 const removeSuffixFromJid = (jid: string): string => {
+  // WHY: same null/undefined hazard as formatJid — message-status webhooks
+  // crashed the ack handler. Return empty string so downstream string ops
+  // (replace/includes) remain safe.
+  if (!jid || typeof jid !== 'string') return jid ?? '';
+
   // Remove all WhatsApp JID suffixes including @lid, @s.whatsapp.net, @g.us, @broadcast, etc.
   const suffixes = [
     '@s.whatsapp.net',
