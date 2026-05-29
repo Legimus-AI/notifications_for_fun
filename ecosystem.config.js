@@ -15,6 +15,14 @@
 // DO NOT add --max-old-space-size here on prod — the OOM is a listener leak,
 // not a legitimate RAM need. Fixing the leak (T8) is the correct path; if
 // V8 grows past ~2GB on this app there is still a leak to hunt.
+//
+// max_memory_restart is the OOM SAFETY-NET (defense in depth). T8 fixes the
+// dominant reconnect-listener leak, but Baileys 7.0.0-rc has documented
+// internal leaks we don't control (per-message growth #2090, media-send #2104).
+// If a residual leak creeps up, PM2 sends SIGINT at 1500M — BELOW V8's hard
+// heap limit — so our gracefulShutdown runs (frees device slots, no <conflict>
+// cascade) instead of a hard "FATAL: heap out of memory" crash that yanks the
+// sockets ungracefully. This turns a catastrophic OOM into a clean ~5s restart.
 module.exports = {
   apps: [
     {
@@ -27,6 +35,7 @@ module.exports = {
       min_uptime: 10_000,
       max_restarts: 15,
       restart_delay: 10_000,
+      max_memory_restart: '1500M',
     },
   ],
 };
