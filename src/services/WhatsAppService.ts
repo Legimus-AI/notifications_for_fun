@@ -244,6 +244,9 @@ export class WhatsAppService extends EventEmitter {
   // setTimeout before a new socket is spawned (otherwise concurrent sockets
   // pile up → conflict + listener leak → heap OOM).
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Set by gracefulShutdownAll so pending reconnect timers that fire mid-shutdown
+  // don't spawn a fresh socket the SIGKILL then yanks (→ ghost slot → conflict).
+  private isShuttingDown = false;
 
   constructor() {
     super();
@@ -298,6 +301,14 @@ export class WhatsAppService extends EventEmitter {
    * production-grade for clients.
    */
   async gracefulShutdownAll(): Promise<void> {
+    // Stop any pending reconnect from spawning a socket the imminent SIGKILL
+    // would yank ungracefully (→ ghost device slot → <conflict> on next boot).
+    this.isShuttingDown = true;
+    for (const [channelId, timer] of this.reconnectTimers.entries()) {
+      clearTimeout(timer);
+      this.reconnectTimers.delete(channelId);
+    }
+
     const channelIds = Array.from(this.connections.keys());
     if (channelIds.length === 0) {
       console.log('⏭️ No active WhatsApp sockets to close');
@@ -311,9 +322,10 @@ export class WhatsAppService extends EventEmitter {
         const sock = this.connections.get(channelId);
         if (!sock) return;
         try {
-          this.connections.delete(channelId);
           this.connectionStatus.set(channelId, 'shutting_down');
-          sock.end(undefined);
+          // Full teardown: end() alone leaks listeners; here we also want the
+          // device slot freed cleanly so the next boot reconnects without QR.
+          this.teardownSocket(channelId, sock);
           console.log(`✅ Socket closed cleanly for ${channelId}`);
         } catch (error) {
           console.warn(`⚠️ Error closing socket for ${channelId}:`, error);
@@ -603,7 +615,7 @@ export class WhatsAppService extends EventEmitter {
 
       // Handle connection updates
       sock.ev.on('connection.update', async (update) => {
-        await this.handleConnectionUpdate(channelId, update, phoneNumber);
+        await this.handleConnectionUpdate(channelId, update, phoneNumber, sock);
       });
 
       // Handle credential updates
@@ -687,6 +699,7 @@ export class WhatsAppService extends EventEmitter {
     channelId: string,
     update: Partial<ConnectionState>,
     phoneNumber?: string,
+    eventSock?: WASocket,
   ) {
     // Check if channel still exists or is being disconnected before processing events
     const currentStatus = this.connectionStatus.get(channelId);
@@ -767,13 +780,25 @@ export class WhatsAppService extends EventEmitter {
         );
       }
 
+      // Identity guard: if this 'close' came from a socket we ALREADY replaced
+      // (a late close racing a fresh socket), do NOT run teardownSocket — it
+      // would delete the live socket from the map and cancel its reconnect
+      // timer. Just drop the stale socket's own listeners/transport and bail.
+      const liveSock = this.connections.get(channelId);
+      if (eventSock && liveSock && liveSock !== eventSock) {
+        console.log(
+          `⚠️ ${channelId} stale 'close' from a replaced socket — ignoring (live socket untouched)`,
+        );
+        this.destroySocketResources(eventSock);
+        return;
+      }
+
       // T8: tear down the dead socket COMPLETELY before deciding what to do
       // next. The socket has already fired 'close', but its event listeners
       // (closures over `this`, auth.creds, the socket) remain referenced —
       // across 1894 reconnects this leaked ~6GB → FATAL OOM. teardownSocket
       // also clears any pending reconnect timer so we don't pile up sockets.
-      const deadSock = this.connections.get(channelId);
-      this.teardownSocket(channelId, deadSock);
+      this.teardownSocket(channelId, eventSock ?? liveSock);
 
       // T3: classify the close into one of three buckets so we stop treating
       // every 401 as terminal. A 401 with a `conflict`/`replaced` message means
@@ -863,10 +888,12 @@ export class WhatsAppService extends EventEmitter {
             status: 'connecting',
           });
           await this.updateChannelStatus(channelId, 'connecting');
-          const t = setTimeout(
-            () => this.connectChannel(channelId, phoneNumber),
-            delay,
-          );
+          const t = setTimeout(() => {
+            this.reconnectTimers.delete(channelId);
+            if (this.isShuttingDown) return; // don't spawn a socket mid-shutdown
+            this.connectChannel(channelId, phoneNumber);
+          }, delay);
+          t.unref(); // don't keep the process alive on shutdown
           this.reconnectTimers.set(channelId, t);
         }
       } else {
@@ -879,10 +906,12 @@ export class WhatsAppService extends EventEmitter {
           status: 'connecting',
         });
         await this.updateChannelStatus(channelId, 'connecting');
-        const t = setTimeout(
-          () => this.connectChannel(channelId, phoneNumber),
-          TRANSITORY_RECONNECT_DELAY_MS,
-        );
+        const t = setTimeout(() => {
+          this.reconnectTimers.delete(channelId);
+          if (this.isShuttingDown) return; // don't spawn a socket mid-shutdown
+          this.connectChannel(channelId, phoneNumber);
+        }, TRANSITORY_RECONNECT_DELAY_MS);
+        t.unref(); // don't keep the process alive on shutdown
         this.reconnectTimers.set(channelId, t);
       }
     }
@@ -2131,7 +2160,15 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (!target) return;
+    this.destroySocketResources(target);
+  }
 
+  /**
+   * Drop a socket's listeners + close its transport, WITHOUT touching the
+   * channel→socket map or reconnect timers. Used both by teardownSocket and by
+   * the stale-close identity guard (where the live socket must NOT be disturbed).
+   */
+  private destroySocketResources(sock: WASocket): void {
     // CRITICAL: breaks the closures that retain `this`, `auth.creds` and the
     // socket itself across the EventEmitter — without this V8 can't GC them.
     // BaileysEventEmitter is strictly typed: removeAllListeners requires the
@@ -2147,18 +2184,18 @@ export class WhatsAppService extends EventEmitter {
     ] as const;
     for (const ev of ourEvents) {
       try {
-        target.ev.removeAllListeners(ev);
+        sock.ev.removeAllListeners(ev);
       } catch (_e) {
         /* noop: emitter may already be torn down */
       }
     }
     try {
-      target.ws?.close();
+      sock.ws?.close();
     } catch (_e) {
       /* noop: ws may already be closed */
     }
     try {
-      target.end(undefined);
+      sock.end(undefined);
     } catch (_e) {
       /* noop: end() throws if already ended */
     }

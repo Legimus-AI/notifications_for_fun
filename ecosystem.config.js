@@ -23,12 +23,20 @@
 // heap limit — so our gracefulShutdown runs (frees device slots, no <conflict>
 // cascade) instead of a hard "FATAL: heap out of memory" crash that yanks the
 // sockets ungracefully. This turns a catastrophic OOM into a clean ~5s restart.
+// WHY run node directly (not `npm start`): with `script:'npm', args:'start'`,
+// PM2 monitors the `npm` WRAPPER process, not the real node child. That breaks
+// BOTH safety nets: max_memory_restart watches the wrapper's (tiny) RSS so it
+// never fires on the leaking node child, and SIGINT goes to npm which may not
+// forward it → gracefulShutdown never runs → ungraceful exit → ghost device
+// slot → <conflict> cascade. Running node directly makes PM2 signal + measure
+// the actual process. ts-node/register keeps TS-on-the-fly (matches `npm start`).
 module.exports = {
   apps: [
     {
       name: 'notifications_for_fun',
-      script: 'npm',
-      args: 'start',
+      script: './src/index.ts',
+      interpreter: 'node',
+      interpreter_args: '-r ts-node/register -r tsconfig-paths/register',
       kill_timeout: 30_000,
       wait_ready: false,
       listen_timeout: 30_000,

@@ -41,11 +41,11 @@ const schema = new Schema(
 // Compound index for efficient message lookup by channel and message ID (used for replies)
 schema.index({ channelId: 1, 'payload.key.id': 1 });
 
-// TTL: this collection persists the FULL payload of every inbound message and
-// grows unbounded (DB-bloat sibling of the log-bloat problem). Auto-purge after
-// 90 days. NOTE: once this index builds on deploy, Mongo's TTL monitor will
-// delete documents older than 90d — confirm retention with Victor before deploy.
-schema.index({ createdAt: 1 }, { expireAfterSeconds: 7_776_000 });
+// NOTE: this collection persists the FULL payload of every inbound message and
+// grows unbounded (DB-bloat). A TTL index (e.g. 90d) is the fix, but adding it
+// here would let Mongo's TTL monitor DELETE historical data on deploy — so it
+// must be a separate, approved migration with a retention decision + backup,
+// NOT bundled into this stability deploy. Tracked as T8.7 (pending Victor's OK).
 
 schema.plugin(mongoosePaginate);
 
