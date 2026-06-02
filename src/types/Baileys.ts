@@ -1,32 +1,27 @@
 /**
- * Type extensions for Baileys 7.x.x to support LID (Local Identifier) system
+ * Type extensions to keep LID-aware code compiling against Baileys 6.7.x.
  *
- * Baileys 7 introduced LIDs to ensure user anonymity in large groups.
- * Messages can now come from either Phone Number JIDs (@s.whatsapp.net) or LIDs (@lid).
- *
- * Key fields added in Baileys 7:
- * - remoteJidAlt: Alternate JID for DMs (contains PN when remoteJid is LID)
- * - participantAlt: Alternate JID for Groups (contains PN when participant is LID)
- *
- * @see https://whiskey.so/migrate-latest
+ * The LID (Local Identifier) system landed in Baileys 7. This project was
+ * written for v7 but runs on v6.7.x, where the LID surface is absent. The
+ * call sites already degrade gracefully at runtime (every access is optional
+ * and guarded), so these augmentations only restore the TYPES that v6 lacks
+ * — they do NOT add behavior. On v6 the fields are simply `undefined` and the
+ * `lid-mapping.update` event never fires.
  */
 
-import { proto } from '@whiskeysockets/baileys';
-
 declare module '@whiskeysockets/baileys' {
-  export interface MessageKey extends proto.IMessageKey {
-    /**
-     * Alternative JID for remote user in DMs.
-     * When remoteJid is a LID (@lid), this contains the actual phone number (@s.whatsapp.net)
-     */
-    remoteJidAlt?: string;
-
-    /**
-     * Alternative JID for participant in groups.
-     * When participant is a LID (@lid), this contains the actual phone number (@s.whatsapp.net)
-     */
-    participantAlt?: string;
+  // v7 added these alt-JID fields on the message key; absent in v6.
+  // proto.IMessageKey is an interface, so this merges cleanly.
+  namespace proto {
+    interface IMessageKey {
+      remoteJidAlt?: string | null;
+      participantAlt?: string | null;
+    }
   }
+  // NOTE: BaileysEventMap and SignalRepository are exported as `type` aliases
+  // in v6, not interfaces, so they cannot be augmented here. The v7-only
+  // `lid-mapping.update` event and `signalRepository.lidMapping` access are
+  // shimmed at the call sites instead (see lidMappingOf() in WhatsAppService).
 }
 
 /**
