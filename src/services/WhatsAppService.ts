@@ -1033,9 +1033,9 @@ export class WhatsAppService extends EventEmitter {
           JSON.stringify(
             {
               remoteJid: message.key.remoteJid,
-              remoteJidAlt: (message.key as any).remoteJidAlt,
+              remoteJidAlt: message.key.remoteJidAlt,
               participant: message.key.participant,
-              participantAlt: (message.key as any).participantAlt,
+              participantAlt: message.key.participantAlt,
               fromMe: message.key.fromMe,
               pushName: message.pushName,
             },
@@ -1046,16 +1046,16 @@ export class WhatsAppService extends EventEmitter {
       }
 
       // For DMs: use senderPn (remoteJidAlt in message key)
-      if ((message.key as any).remoteJidAlt) {
-        jid = (message.key as any).remoteJidAlt;
+      if (message.key.remoteJidAlt) {
+        jid = message.key.remoteJidAlt;
         console.log(
           `✅ Resolved LID to actual number using remoteJidAlt: ${originalJid} → ${jid}`,
         );
         console.log(`   Resolution method: remoteJidAlt field`);
       }
       // For Groups: use participantAlt if available
-      else if ((message.key as any).participantAlt) {
-        jid = (message.key as any).participantAlt;
+      else if (message.key.participantAlt) {
+        jid = message.key.participantAlt;
         console.log(
           `✅ Resolved LID to actual number using participantAlt: ${originalJid} → ${jid}`,
         );
