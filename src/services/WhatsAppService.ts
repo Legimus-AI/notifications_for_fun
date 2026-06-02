@@ -230,22 +230,6 @@ export interface WhatsAppServiceEvents {
   call: (channelId: string, payload: any) => void;
 }
 
-/**
- * Minimal shape of the v7 LID mapping store. v6.7.x has no lidMapping on the
- * signal repository, so on v6 lidMappingOf() always returns undefined and the
- * LID code paths are inert (every caller guards on the result first).
- */
-type LidMappingStoreLike = {
-  getPNForLID(lid: string): Promise<string | null> | string | null;
-  getLIDForPN(pn: string): Promise<string | null> | string | null;
-  store?: { toJSON?: () => Record<string, string> };
-};
-
-function lidMappingOf(sock: WASocket): LidMappingStoreLike | undefined {
-  return (sock?.signalRepository as { lidMapping?: LidMappingStoreLike } | undefined)
-    ?.lidMapping;
-}
-
 export class WhatsAppService extends EventEmitter {
   private connections: Map<string, WASocket> = new Map();
   private connectionStatus: Map<string, string> = new Map();
@@ -689,17 +673,17 @@ export class WhatsAppService extends EventEmitter {
       });
 
       // Handle LID mapping updates (Baileys 7 requirement)
-      (sock.ev as any).on('lid-mapping.update', async (mapping: any) => {
+      sock.ev.on('lid-mapping.update', async (mapping) => {
         if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
           console.log(
             `🔄 LID mapping update for channel ${channelId}:`,
             JSON.stringify(mapping, null, 2),
           );
         }
-        // LID mappings are automatically stored in lidMappingOf(sock)
+        // LID mappings are automatically stored in sock.signalRepository.lidMapping
         // You can access them via:
-        // - lidMappingOf(sock)!.getLIDForPN(pn)
-        // - lidMappingOf(sock)!.getPNForLID(lid)
+        // - sock.signalRepository.lidMapping.getLIDForPN(pn)
+        // - sock.signalRepository.lidMapping.getPNForLID(lid)
       });
     } catch (error) {
       console.error(`❌ Error connecting channel ${channelId}:`, error);
@@ -1083,16 +1067,16 @@ export class WhatsAppService extends EventEmitter {
           `   signalRepository available: ${!!sock?.signalRepository}`,
         );
         console.log(
-          `   lidMapping available: ${!!lidMappingOf(sock)}`,
+          `   lidMapping available: ${!!sock?.signalRepository?.lidMapping}`,
         );
 
-        if (sock && lidMappingOf(sock)) {
+        if (sock && sock.signalRepository?.lidMapping) {
           try {
             console.log(
               `🔍 Calling lidMapping.getPNForLID('${originalJid}')...`,
             );
             const pn =
-              await lidMappingOf(sock)!.getPNForLID(originalJid);
+              await sock.signalRepository.lidMapping.getPNForLID(originalJid);
             console.log(
               `   lidMapping.getPNForLID result: ${pn ? pn : 'null'}`,
             );
@@ -1716,9 +1700,9 @@ export class WhatsAppService extends EventEmitter {
       console.log(`🔍 LID detected in JID: ${jid}`);
 
       const sock = this.connections.get(channelId);
-      if (sock && lidMappingOf(sock)) {
+      if (sock && sock.signalRepository?.lidMapping) {
         try {
-          const pn = await lidMappingOf(sock)!.getPNForLID(jid);
+          const pn = await sock.signalRepository.lidMapping.getPNForLID(jid);
           if (pn) {
             console.log(
               `✅ Resolved LID to PN using lidMapping: ${jid} → ${pn}`,
@@ -2200,7 +2184,7 @@ export class WhatsAppService extends EventEmitter {
     ] as const;
     for (const ev of ourEvents) {
       try {
-        sock.ev.removeAllListeners(ev as any);
+        sock.ev.removeAllListeners(ev);
       } catch (_e) {
         /* noop: emitter may already be torn down */
       }
@@ -3110,7 +3094,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error(`Channel ${channelId} is not connected`);
     }
 
-    if (!lidMappingOf(sock)) {
+    if (!sock.signalRepository?.lidMapping) {
       console.warn(`⚠️ LID mapping not available for channel ${channelId}`);
       return [];
     }
@@ -3118,7 +3102,7 @@ export class WhatsAppService extends EventEmitter {
     try {
       // Access the internal store if available
       // Note: This is implementation-specific and may need adjustment based on Baileys version
-      const store = lidMappingOf(sock) as any;
+      const store = sock.signalRepository.lidMapping as any;
 
       // Try to get all mappings if the store exposes them
       if (store.store && typeof store.store.toJSON === 'function') {
@@ -3151,12 +3135,12 @@ export class WhatsAppService extends EventEmitter {
       throw new Error(`Channel ${channelId} is not connected`);
     }
 
-    if (!lidMappingOf(sock)) {
+    if (!sock.signalRepository?.lidMapping) {
       return 0;
     }
 
     try {
-      const store = lidMappingOf(sock) as any;
+      const store = sock.signalRepository.lidMapping as any;
 
       if (store.store && typeof store.store.toJSON === 'function') {
         const allMappings = store.store.toJSON();
@@ -3182,7 +3166,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error(`Channel ${channelId} is not connected`);
     }
 
-    if (!lidMappingOf(sock)) {
+    if (!sock.signalRepository?.lidMapping) {
       throw new Error(`LID mapping not available for channel ${channelId}`);
     }
 
@@ -3191,7 +3175,7 @@ export class WhatsAppService extends EventEmitter {
 
     try {
       const pn =
-        await lidMappingOf(sock)!.getPNForLID(formattedLid);
+        await sock.signalRepository.lidMapping.getPNForLID(formattedLid);
 
       if (pn) {
         return { lid: formattedLid, pn };
@@ -3219,7 +3203,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error(`Channel ${channelId} is not connected`);
     }
 
-    if (!lidMappingOf(sock)) {
+    if (!sock.signalRepository?.lidMapping) {
       throw new Error(`LID mapping not available for channel ${channelId}`);
     }
 
@@ -3231,7 +3215,7 @@ export class WhatsAppService extends EventEmitter {
 
     try {
       const lid =
-        await lidMappingOf(sock)!.getLIDForPN(formattedPn);
+        await sock.signalRepository.lidMapping.getLIDForPN(formattedPn);
 
       if (lid) {
         return { lid, pn: formattedPn };
