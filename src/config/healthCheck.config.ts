@@ -44,7 +44,7 @@ export const MAX_CONFLICT_RECONNECTS = 5;
  * Exponential backoff for the first conflict reconnects, in ms. Tight early
  * steps recover fast from a transient conflict; capped at 2 min.
  */
-export const CONFLICT_BACKOFF_MS = [10_000, 20_000, 45_000, 90_000, 120_000];
+export const CONFLICT_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000, 45_000];
 
 /**
  * Steady retry interval once the fast attempts are exhausted on a persistent
@@ -52,7 +52,7 @@ export const CONFLICT_BACKOFF_MS = [10_000, 20_000, 45_000, 90_000, 120_000];
  * competing device goes away. WHY 2min: balances fast recovery vs not
  * hammering WhatsApp into a real device_removed.
  */
-export const CONFLICT_COOLDOWN_MS = 120_000;
+export const CONFLICT_COOLDOWN_MS = 45_000;
 
 /**
  * A connection must stay open this long before its conflict-reconnect budget
@@ -66,7 +66,7 @@ export const CONFLICT_STABLE_RESET_MS = 60_000;
  * Default delay before reconnecting after a transitory disconnect
  * (network blip, 428/408/503/515). Kept short to recover fast.
  */
-export const TRANSITORY_RECONNECT_DELAY_MS = 5_000;
+export const TRANSITORY_RECONNECT_DELAY_MS = 3_000;
 
 /**
  * Reasons that should NOT be auto-healed.
