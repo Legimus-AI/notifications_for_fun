@@ -32,6 +32,8 @@ import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
 import {
   MAX_CONFLICT_RECONNECTS,
   CONFLICT_BACKOFF_MS,
+  CONFLICT_COOLDOWN_MS,
+  CONFLICT_STABLE_RESET_MS,
   TRANSITORY_RECONNECT_DELAY_MS,
 } from '../config/healthCheck.config';
 import { channelMetrics } from './ChannelMetricsService';
@@ -244,6 +246,13 @@ export class WhatsAppService extends EventEmitter {
   // setTimeout before a new socket is spawned (otherwise concurrent sockets
   // pile up → conflict + listener leak → heap OOM).
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Defers clearing the conflict-attempt budget until a connection has stayed
+  // open for CONFLICT_STABLE_RESET_MS. Prevents a flapping conflict (open ->
+  // replaced in seconds) from resetting the counter and looping forever.
+  private stableTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Tracks channels we've already alerted about a persistent conflict, so we
+  // log/notify once (not every retry) until they recover.
+  private conflictAlerted: Set<string> = new Set();
   // Set by gracefulShutdownAll so pending reconnect timers that fire mid-shutdown
   // don't spawn a fresh socket the SIGKILL then yanks (→ ghost slot → conflict).
   private isShuttingDown = false;
@@ -307,6 +316,10 @@ export class WhatsAppService extends EventEmitter {
     for (const [channelId, timer] of this.reconnectTimers.entries()) {
       clearTimeout(timer);
       this.reconnectTimers.delete(channelId);
+    }
+    for (const [channelId, timer] of this.stableTimers.entries()) {
+      clearTimeout(timer);
+      this.stableTimers.delete(channelId);
     }
 
     const channelIds = Array.from(this.connections.keys());
@@ -754,6 +767,13 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (connection === 'close') {
+      // A close cancels the pending stability reset: a connection that dropped
+      // before proving stable must NOT clear its conflict-attempt budget.
+      const pendingStable = this.stableTimers.get(channelId);
+      if (pendingStable) {
+        clearTimeout(pendingStable);
+        this.stableTimers.delete(channelId);
+      }
       const disconnectError = lastDisconnect?.error as Boom | undefined;
       const disconnectStatusCode = disconnectError?.output?.statusCode;
       const disconnectReasonName =
@@ -842,6 +862,7 @@ export class WhatsAppService extends EventEmitter {
       if (isTerminal) {
         console.log(`🚪 ${channelId} logged out (terminal: ${disconnectReasonName})`);
         this.reconnectAttempts.delete(channelId);
+        this.conflictAlerted.delete(channelId);
         await this.updateChannelStatus(channelId, 'logged_out');
         // WHY: connectedAt drives the "Connected since" UI marker; leaving it
         // set makes a logged-out channel look connected. Clear it on logout.
@@ -856,22 +877,37 @@ export class WhatsAppService extends EventEmitter {
       } else if (isConflict) {
         const attempt = this.reconnectAttempts.get(channelId) ?? 0;
         if (attempt >= MAX_CONFLICT_RECONNECTS) {
-          // Conflict reconnect budget exhausted → escalate to terminal so a
-          // human re-pairs by QR instead of looping forever.
-          console.log(
-            `🚪 ${channelId} conflict reconnect budget exhausted (${attempt}/${MAX_CONFLICT_RECONNECTS}) — escalating to logged_out`,
-          );
-          this.reconnectAttempts.delete(channelId);
-          await this.updateChannelStatus(channelId, 'logged_out');
-          await this.updateChannelConfig(channelId, { connectedAt: null });
-          channelMetrics.record(channelId, 'logged_out', {
-            statusCode: disconnectStatusCode ?? null,
-            reason: disconnectReasonName,
-            message: disconnectMessage,
-            attempt,
-            status: 'logged_out',
-          });
-          await fireTerminalDisconnectedWebhook();
+          // Fast attempts exhausted on a PERSISTENT conflict. Creds are still
+          // valid → do NOT force a QR re-pair. Hold at a steady cooldown and
+          // keep retrying: the channel self-heals when the competing device
+          // (another linked WhatsApp Web on the same number) closes. Alert once.
+          if (!this.conflictAlerted.has(channelId)) {
+            this.conflictAlerted.add(channelId);
+            console.warn(
+              `⚠️ ${channelId} persistent conflict — another device holds the session. ` +
+                `Steady retry every ${CONFLICT_COOLDOWN_MS}ms (no QR; creds valid). Check Linked Devices.`,
+            );
+            channelMetrics.record(channelId, 'conflict', {
+              statusCode: disconnectStatusCode ?? null,
+              reason: disconnectReasonName,
+              message: disconnectMessage,
+              attempt,
+              status: 'connecting',
+            });
+          }
+          await this.updateChannelStatus(channelId, 'connecting');
+          const existingCooldown = this.reconnectTimers.get(channelId);
+          if (existingCooldown) clearTimeout(existingCooldown);
+          const t = setTimeout(() => {
+            if (this.reconnectTimers.get(channelId) !== t) return; // superseded
+            this.reconnectTimers.delete(channelId);
+            if (this.isShuttingDown) return;
+            void this.connectChannel(channelId, phoneNumber).catch((e) =>
+              console.error(`❌ cooldown reconnect failed for ${channelId}:`, e),
+            );
+          }, CONFLICT_COOLDOWN_MS);
+          t.unref();
+          this.reconnectTimers.set(channelId, t);
         } else {
           const next = attempt + 1;
           this.reconnectAttempts.set(channelId, next);
@@ -921,15 +957,34 @@ export class WhatsAppService extends EventEmitter {
       await this.updateChannelStatus(channelId, 'active');
       this.connectionStatus.set(channelId, 'active');
 
-      // T3/T8: success → drop conflict-attempt counter so the next future
-      // disconnect starts with a fresh backoff budget, and clear any pending
-      // reconnect timer that may have fired late after a successful manual
-      // /connect call.
-      this.reconnectAttempts.delete(channelId);
+      // T3/T8: clear any pending reconnect timer that may have fired late after
+      // a successful manual /connect call.
       const pendingTimer = this.reconnectTimers.get(channelId);
       if (pendingTimer) {
         clearTimeout(pendingTimer);
         this.reconnectTimers.delete(channelId);
+      }
+      // WHY: only drop the conflict-attempt budget once the connection has
+      // PROVEN stable (stayed open CONFLICT_STABLE_RESET_MS). A flapping
+      // conflict (open -> replaced in seconds) must not reset the counter, or
+      // it loops forever without escalating to the steady cooldown. A later
+      // 'close' cancels this timer (see the close handler).
+      // Only arm the stability reset if there's a conflict budget/alert to
+      // clear — healthy channels with no prior conflict don't need a timer.
+      if (
+        this.reconnectAttempts.has(channelId) ||
+        this.conflictAlerted.has(channelId)
+      ) {
+        const prevStable = this.stableTimers.get(channelId);
+        if (prevStable) clearTimeout(prevStable);
+        const stable = setTimeout(() => {
+          if (this.stableTimers.get(channelId) !== stable) return; // superseded
+          this.reconnectAttempts.delete(channelId);
+          this.conflictAlerted.delete(channelId);
+          this.stableTimers.delete(channelId);
+        }, CONFLICT_STABLE_RESET_MS);
+        stable.unref();
+        this.stableTimers.set(channelId, stable);
       }
       channelMetrics.record(channelId, 'open', { status: 'active' });
 
@@ -2158,6 +2213,12 @@ export class WhatsAppService extends EventEmitter {
       clearTimeout(timer);
       this.reconnectTimers.delete(channelId);
     }
+    const stable = this.stableTimers.get(channelId);
+    if (stable) {
+      clearTimeout(stable);
+      this.stableTimers.delete(channelId);
+    }
+    this.conflictAlerted.delete(channelId);
 
     if (!target) return;
     this.destroySocketResources(target);

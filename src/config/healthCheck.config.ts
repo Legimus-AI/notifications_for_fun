@@ -31,18 +31,36 @@ export const MAX_HEAL_ATTEMPTS = 3;
 export const HEAL_RECHECK_DELAY_MS = 10_000;
 
 /**
- * Maximum reconnect attempts for a recoverable 401 conflict
+ * Fast conflict reconnect attempts before settling into the steady cooldown.
  * (conflict / replaced / Connection Failure with auth still present).
- * On the (cap+1)th attempt the channel is escalated to logged_out + webhook.
+ * Past this count we DO NOT escalate to logged_out (creds are still valid →
+ * forcing a QR re-pair is wrong); we hold at CONFLICT_COOLDOWN_MS and keep
+ * retrying patiently so the channel self-heals when the competing device
+ * (another linked WhatsApp Web on the same number) closes.
  */
 export const MAX_CONFLICT_RECONNECTS = 5;
 
 /**
- * Exponential backoff (with capped tail) for conflict reconnects, in ms.
- * Indexed by attempt number (0-based). Past the array length the last value
- * is reused.
+ * Exponential backoff for the first conflict reconnects, in ms. Tight early
+ * steps recover fast from a transient conflict; capped at 2 min.
  */
-export const CONFLICT_BACKOFF_MS = [15_000, 30_000, 60_000, 120_000, 300_000];
+export const CONFLICT_BACKOFF_MS = [10_000, 20_000, 45_000, 90_000, 120_000];
+
+/**
+ * Steady retry interval once the fast attempts are exhausted on a persistent
+ * conflict. Keeps creds (no QR) and recovers within this window once the
+ * competing device goes away. WHY 2min: balances fast recovery vs not
+ * hammering WhatsApp into a real device_removed.
+ */
+export const CONFLICT_COOLDOWN_MS = 120_000;
+
+/**
+ * A connection must stay open this long before its conflict-reconnect budget
+ * is cleared. WHY: a flapping conflict (open -> replaced within seconds) must
+ * NOT reset the attempt counter, or it loops forever without ever escalating
+ * or stabilizing (root cause of the observed >1h conflict churn).
+ */
+export const CONFLICT_STABLE_RESET_MS = 60_000;
 
 /**
  * Default delay before reconnecting after a transitory disconnect
