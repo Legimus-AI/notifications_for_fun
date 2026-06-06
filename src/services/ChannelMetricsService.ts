@@ -30,6 +30,12 @@ interface RecordExtras {
  */
 class ChannelMetricsService {
   private metrics: Map<string, ChannelMetric> = new Map();
+  // Last persisted "event:statusCode" per channel. Used to dedup the durable
+  // trail: a revoked channel emits the SAME conflict/401 every ~45s forever
+  // (5af90a60 wrote 3205 identical rows). We only persist STATE CHANGES, so the
+  // timeline stays a clean audit of transitions, not retry spam. The in-memory
+  // snapshot + reconnectCount still update on every call.
+  private lastPersistedSig: Map<string, string> = new Map();
 
   private ensure(channelId: string): ChannelMetric {
     let m = this.metrics.get(channelId);
@@ -73,7 +79,12 @@ class ChannelMetricsService {
       m.reconnectCount += 1;
     }
 
-    // Durable trail — fire-and-forget, swallow errors.
+    // Durable trail — persist only on a state change (dedup retry spam).
+    const sig = `${event}:${extras.statusCode ?? ''}`;
+    if (this.lastPersistedSig.get(channelId) === sig) return;
+    this.lastPersistedSig.set(channelId, sig);
+
+    // Fire-and-forget, swallow errors.
     ChannelConnectionEvents.create({
       channelId,
       event,

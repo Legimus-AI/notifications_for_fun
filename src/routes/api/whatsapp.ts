@@ -15,6 +15,7 @@ router.post(
   whatsAppController.disconnectChannel,
 );
 router.get('/channels/:channelId/status', whatsAppController.getChannelStatus);
+router.get('/channels/:channelId/events', whatsAppController.getChannelEvents);
 router.delete('/channels/:channelId', whatsAppController.deleteChannel);
 
 //
