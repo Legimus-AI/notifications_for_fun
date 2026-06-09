@@ -35,6 +35,8 @@ import {
   CONFLICT_COOLDOWN_MS,
   CONFLICT_STABLE_RESET_MS,
   TRANSITORY_RECONNECT_DELAY_MS,
+  TERMINAL_AUTH_REJECTION_COUNT,
+  TERMINAL_AUTH_REJECTION_WINDOW_MS,
 } from '../config/healthCheck.config';
 import { channelMetrics } from './ChannelMetricsService';
 
@@ -708,6 +710,33 @@ export class WhatsAppService extends EventEmitter {
   /**
    * Handles connection status updates
    */
+  /**
+   * Arms (or re-arms) the steady conflict-cooldown reconnect for a channel.
+   */
+  private scheduleConflictCooldown(
+    channelId: string,
+    phoneNumber?: string,
+  ): void {
+    const existingCooldown = this.reconnectTimers.get(channelId);
+    if (existingCooldown) clearTimeout(existingCooldown);
+    const t = setTimeout(() => {
+      if (this.reconnectTimers.get(channelId) !== t) return; // superseded
+      this.reconnectTimers.delete(channelId);
+      if (this.isShuttingDown) return;
+      void this.connectChannel(channelId, phoneNumber).catch((e) => {
+        console.error(`❌ cooldown reconnect failed for ${channelId}:`, e);
+        // WHY: a throw here (e.g. an Atlas blip mid-connect) produces no
+        // 'close' event, so nothing else re-arms the loop — the channel froze
+        // in 'error' forever (observed 2026-06-04 on 5af90a60 via
+        // MongoNetworkError). Re-arm so retries — and the revocation
+        // detector — keep progressing.
+        this.scheduleConflictCooldown(channelId, phoneNumber);
+      });
+    }, CONFLICT_COOLDOWN_MS);
+    t.unref();
+    this.reconnectTimers.set(channelId, t);
+  }
+
   private async handleConnectionUpdate(
     channelId: string,
     update: Partial<ConnectionState>,
@@ -875,8 +904,71 @@ export class WhatsAppService extends EventEmitter {
         });
         await fireTerminalDisconnectedWebhook();
       } else if (isConflict) {
+        // Revocation detector: a session revoked by WhatsApp presents EXACTLY
+        // like a recoverable ghost conflict (401 + "Connection Failure") — the
+        // only reliable difference is that it rejects EVERY fresh socket,
+        // forever. Track the streak in the DB so it survives process restarts
+        // and manual /connect calls. 440 connectionReplaced is excluded: a
+        // real competing device self-heals when it closes.
+        const isAuthRejection =
+          disconnectStatusCode === DisconnectReason.loggedOut &&
+          /connection failure/.test(msg);
+        let escalatedToTerminal = false;
+        if (isAuthRejection) {
+          try {
+            const channelDoc = await Channel.findOne({ channelId });
+            const channelConfig = (channelDoc?.config ??
+              {}) as WhatsAppAutomatedConfig;
+            const streak = (channelConfig.authRejectionStreak ?? 0) + 1;
+            const streakStartedAt =
+              channelConfig.authRejectionStreakStartedAt ?? new Date();
+            await this.updateChannelConfig(channelId, {
+              authRejectionStreak: streak,
+              authRejectionStreakStartedAt: streakStartedAt,
+            });
+            const streakAgeMs =
+              Date.now() - new Date(streakStartedAt).getTime();
+            if (
+              streak >= TERMINAL_AUTH_REJECTION_COUNT &&
+              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS &&
+              !channelConfig.terminalNotifiedAt
+            ) {
+              // Every fresh socket has been rejected for the whole window →
+              // no QR-less revival is possible. Declare terminal, notify the
+              // webhooks ONCE, and stop retrying.
+              console.log(
+                `🚪 ${channelId} session revoked by WhatsApp (${streak} consecutive auth rejections over ${Math.round(streakAgeMs / 60_000)}min) — escalating to logged_out`,
+              );
+              this.reconnectAttempts.delete(channelId);
+              this.conflictAlerted.delete(channelId);
+              await this.updateChannelStatus(channelId, 'logged_out');
+              await this.updateChannelConfig(channelId, {
+                connectedAt: null,
+                terminalNotifiedAt: new Date(),
+              });
+              channelMetrics.record(channelId, 'logged_out', {
+                statusCode: disconnectStatusCode ?? null,
+                reason: disconnectReasonName,
+                message: disconnectMessage,
+                attempt: streak,
+                status: 'logged_out',
+              });
+              await fireTerminalDisconnectedWebhook();
+              escalatedToTerminal = true;
+            }
+          } catch (streakError) {
+            // A DB blip must not break the close handler — the retry below
+            // still runs and the streak resumes on the next 401.
+            console.error(
+              `❌ auth-rejection streak tracking failed for ${channelId}:`,
+              streakError,
+            );
+          }
+        }
         const attempt = this.reconnectAttempts.get(channelId) ?? 0;
-        if (attempt >= MAX_CONFLICT_RECONNECTS) {
+        if (escalatedToTerminal) {
+          // Terminal: no retry scheduled — a human must re-pair (QR/pairing code).
+        } else if (attempt >= MAX_CONFLICT_RECONNECTS) {
           // Fast attempts exhausted on a PERSISTENT conflict. Creds are still
           // valid → do NOT force a QR re-pair. Hold at a steady cooldown and
           // keep retrying: the channel self-heals when the competing device
@@ -896,18 +988,7 @@ export class WhatsAppService extends EventEmitter {
             });
           }
           await this.updateChannelStatus(channelId, 'connecting');
-          const existingCooldown = this.reconnectTimers.get(channelId);
-          if (existingCooldown) clearTimeout(existingCooldown);
-          const t = setTimeout(() => {
-            if (this.reconnectTimers.get(channelId) !== t) return; // superseded
-            this.reconnectTimers.delete(channelId);
-            if (this.isShuttingDown) return;
-            void this.connectChannel(channelId, phoneNumber).catch((e) =>
-              console.error(`❌ cooldown reconnect failed for ${channelId}:`, e),
-            );
-          }, CONFLICT_COOLDOWN_MS);
-          t.unref();
-          this.reconnectTimers.set(channelId, t);
+          this.scheduleConflictCooldown(channelId, phoneNumber);
         } else {
           const next = attempt + 1;
           this.reconnectAttempts.set(channelId, next);
@@ -987,6 +1068,20 @@ export class WhatsAppService extends EventEmitter {
         this.stableTimers.set(channelId, stable);
       }
       channelMetrics.record(channelId, 'open', { status: 'active' });
+
+      // A successful open DISPROVES revocation (a revoked session never gets
+      // past "logging in"). Clear the persistent auth-rejection streak and
+      // re-arm the once-only webhook guard for future outages.
+      void this.updateChannelConfig(channelId, {
+        authRejectionStreak: 0,
+        authRejectionStreakStartedAt: null,
+        terminalNotifiedAt: null,
+      }).catch((resetError) =>
+        console.error(
+          `❌ failed to clear auth-rejection streak for ${channelId}:`,
+          resetError,
+        ),
+      );
 
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);

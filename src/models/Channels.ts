@@ -18,6 +18,13 @@ export interface WhatsAppAutomatedConfig {
   // leaves 'active', cleared on the next 'open'. Not overwritten by the retry
   // loop (unlike lastStatusUpdate, which rewrites every ~45s).
   disconnectedSince?: Date | null;
+  // Revocation detector: consecutive 401 auth-rejections on fresh sockets.
+  // Persisted so the streak survives process restarts and manual /connect
+  // calls; cleared on any successful 'open' (a revoked session never opens).
+  authRejectionStreak?: number;
+  authRejectionStreakStartedAt?: Date | null;
+  // Set once channel.disconnected fired for the current outage (once-only guard).
+  terminalNotifiedAt?: Date | null;
 }
 
 // Email specific config interface
