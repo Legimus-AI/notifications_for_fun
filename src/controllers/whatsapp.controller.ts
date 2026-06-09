@@ -3,6 +3,7 @@ import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import * as utils from '../helpers/utils';
 import Channel, { WhatsAppAutomatedConfig } from '../models/Channels';
+import ChannelConnectionEvents from '../models/ChannelConnectionEvents';
 import Webhook from '../models/Webhooks';
 import {
   whatsAppService,
@@ -1338,6 +1339,34 @@ class WhatsAppController {
     } catch (error) {
       console.error('Error posting WhatsApp Status:', error);
       utils.handleError(res, utils.buildErrObject(500, error.message));
+    }
+  };
+
+  /**
+   * Connection-event timeline for a channel (audit trail). Newest first.
+   * Source: ChannelConnectionEvents (TTL-bounded to 30 days, deduped to state
+   * changes). Powers the "Con problemas desde / Reconectado el" history UI.
+   */
+  public getChannelEvents = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      // limit comes from the caller; cap bounds the response size. Full history
+      // is already TTL-capped at 30 days in the model.
+      const MAX_EVENTS_PAGE = 200;
+      const limit = Math.min(
+        parseInt(req.query.limit as string, 10) || 50,
+        MAX_EVENTS_PAGE,
+      );
+      const events = await ChannelConnectionEvents.find({ channelId })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+      res.status(200).json({ ok: true, payload: events });
+    } catch (error) {
+      utils.handleError(res, error);
     }
   };
 }

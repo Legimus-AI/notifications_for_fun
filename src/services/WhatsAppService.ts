@@ -2492,13 +2492,23 @@ export class WhatsAppService extends EventEmitter {
     // never on disconnect). This is the root of the channel status desync.
     this.connectionStatus.set(channelId, status);
     try {
-      await Channel.findOneAndUpdate(
-        { channelId },
-        {
-          status,
-          lastStatusUpdate: new Date(),
-        },
-      );
+      const update: Record<string, unknown> = {
+        status,
+        lastStatusUpdate: new Date(),
+      };
+      // "Con problemas desde": seal it once when the channel leaves 'active',
+      // clear it when it recovers. Read current config so the retry loop never
+      // overwrites the original problem timestamp.
+      if (status === 'active') {
+        update['config.disconnectedSince'] = null;
+      } else {
+        const doc = await Channel.findOne({ channelId }, { config: 1 });
+        const cfg = doc?.config as WhatsAppAutomatedConfig | undefined;
+        if (!cfg?.disconnectedSince) {
+          update['config.disconnectedSince'] = new Date();
+        }
+      }
+      await Channel.findOneAndUpdate({ channelId }, update);
     } catch (error) {
       console.error(
         `❌ Error updating channel status for ${channelId}:`,

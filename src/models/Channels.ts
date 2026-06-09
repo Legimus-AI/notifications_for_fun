@@ -11,7 +11,13 @@ export interface WhatsAppAutomatedConfig {
   };
   qrCode?: string;
   pairingCode?: string;
+  // "Reconectado el": set on every successful 'open'. Denormalized for fast
+  // card render (the full history lives in ChannelConnectionEvents).
   connectedAt?: Date;
+  // "Con problemas desde": stable timestamp set ONCE when the channel first
+  // leaves 'active', cleared on the next 'open'. Not overwritten by the retry
+  // loop (unlike lastStatusUpdate, which rewrites every ~45s).
+  disconnectedSince?: Date | null;
 }
 
 // Email specific config interface
