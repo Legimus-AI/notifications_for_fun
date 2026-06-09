@@ -1364,7 +1364,20 @@ class WhatsAppController {
         .sort({ createdAt: -1 })
         .limit(limit)
         .lean();
-      res.status(200).json({ ok: true, payload: events });
+      // Last SUCCESSFUL connection, regardless of how much reconnect/conflict
+      // noise sits in between (the paginated `events` may not reach it). Lets
+      // the UI surface "última conexión exitosa" without scanning the trail.
+      const lastOpen = await ChannelConnectionEvents.findOne({
+        channelId,
+        event: 'open',
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+      res.status(200).json({
+        ok: true,
+        payload: events,
+        lastConnectedAt: lastOpen?.createdAt ?? null,
+      });
     } catch (error) {
       utils.handleError(res, error);
     }
