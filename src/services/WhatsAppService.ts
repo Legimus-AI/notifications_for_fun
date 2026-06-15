@@ -37,6 +37,9 @@ import {
   TRANSITORY_RECONNECT_DELAY_MS,
   TERMINAL_AUTH_REJECTION_COUNT,
   TERMINAL_AUTH_REJECTION_WINDOW_MS,
+  MASS_TRANSPORT_DROP_THRESHOLD,
+  MASS_TRANSPORT_WINDOW_MS,
+  NETWORK_OUTAGE_GRACE_MS,
 } from '../config/healthCheck.config';
 import { channelMetrics } from './ChannelMetricsService';
 
@@ -255,6 +258,15 @@ export class WhatsAppService extends EventEmitter {
   // Tracks channels we've already alerted about a persistent conflict, so we
   // log/notify once (not every retry) until they recover.
   private conflictAlerted: Set<string> = new Set();
+  // Transport-aware escalation: last transport-level disconnect (428/408/503/515
+  // / network blip) per channel. When MASS_TRANSPORT_DROP_THRESHOLD distinct
+  // channels appear here within MASS_TRANSPORT_WINDOW_MS we infer a HOST uplink
+  // outage (power/router/ISP/DNS), not per-channel WhatsApp auth failure.
+  private transportDropTimes: Map<string, number> = new Map();
+  // While Date.now() < this, suppress terminal auth-rejection escalation: a 401
+  // "Connection Failure" right after a host outage is the uplink recovering, not
+  // a revoked session. Set by recordTransportDrop, read by the close handler.
+  private networkOutageActiveUntil = 0;
   // Set by gracefulShutdownAll so pending reconnect timers that fire mid-shutdown
   // don't spawn a fresh socket the SIGKILL then yanks (→ ghost slot → conflict).
   private isShuttingDown = false;
@@ -711,6 +723,38 @@ export class WhatsAppService extends EventEmitter {
    * Handles connection status updates
    */
   /**
+   * Records a transport-level disconnect and, if enough DISTINCT channels drop
+   * within the window, flags a host-network event so the close handler stops
+   * escalating the ensuing 401 "Connection Failure" burst to terminal logout.
+   */
+  private recordTransportDrop(channelId: string): void {
+    const now = Date.now();
+    this.transportDropTimes.set(channelId, now);
+    let recentChannels = 0;
+    for (const [id, ts] of this.transportDropTimes.entries()) {
+      if (now - ts <= MASS_TRANSPORT_WINDOW_MS) recentChannels++;
+      else this.transportDropTimes.delete(id); // prune stale entries
+    }
+    if (recentChannels >= MASS_TRANSPORT_DROP_THRESHOLD) {
+      const wasActive = now < this.networkOutageActiveUntil;
+      this.networkOutageActiveUntil = now + NETWORK_OUTAGE_GRACE_MS;
+      if (!wasActive) {
+        console.warn(
+          `🌐 Host-network event detected: ${recentChannels} channels dropped (transport) within ${Math.round(MASS_TRANSPORT_WINDOW_MS / 1000)}s — ` +
+            `suppressing terminal auth-rejection escalation for ${Math.round(NETWORK_OUTAGE_GRACE_MS / 60_000)}min (uplink/power/DNS event, not per-channel revocation).`,
+        );
+      }
+    }
+  }
+
+  /**
+   * True while a recent host-uplink outage should mask 401s as recoverable.
+   */
+  private isHostNetworkEvent(): boolean {
+    return Date.now() < this.networkOutageActiveUntil;
+  }
+
+  /**
    * Arms (or re-arms) the steady conflict-cooldown reconnect for a channel.
    */
   private scheduleConflictCooldown(
@@ -910,9 +954,25 @@ export class WhatsAppService extends EventEmitter {
         // forever. Track the streak in the DB so it survives process restarts
         // and manual /connect calls. 440 connectionReplaced is excluded: a
         // real competing device self-heals when it closes.
+        // Transport-aware escalation: during a detected host-uplink outage a
+        // 401 "Connection Failure" is the network recovering (mass re-handshake
+        // after the blip), NOT a revoked session — do NOT count it toward the
+        // terminal streak. Genuine revocation keeps 401-ing after the grace and
+        // escalates then.
+        const hostNetworkEvent = this.isHostNetworkEvent();
         const isAuthRejection =
+          !hostNetworkEvent &&
           disconnectStatusCode === DisconnectReason.loggedOut &&
           /connection failure/.test(msg);
+        if (
+          hostNetworkEvent &&
+          disconnectStatusCode === DisconnectReason.loggedOut &&
+          /connection failure/.test(msg)
+        ) {
+          console.warn(
+            `🌐 ${channelId} 401 "Connection Failure" during host-network grace — treating as recoverable, no terminal escalation.`,
+          );
+        }
         let escalatedToTerminal = false;
         if (isAuthRejection) {
           try {
@@ -1015,6 +1075,9 @@ export class WhatsAppService extends EventEmitter {
         }
       } else {
         // Transitory (428/408/503/515/network blip): reconnect fast.
+        // Feed the host-network detector: a cluster of these across channels
+        // means the HOST lost its uplink, not a per-channel failure.
+        this.recordTransportDrop(channelId);
         console.log(`🔄 Reconnecting ${channelId} (transitory ${disconnectReasonName})...`);
         channelMetrics.record(channelId, 'reconnect', {
           statusCode: disconnectStatusCode ?? null,

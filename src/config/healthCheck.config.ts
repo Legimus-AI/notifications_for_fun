@@ -87,6 +87,34 @@ export const TERMINAL_AUTH_REJECTION_COUNT = 8;
 export const TERMINAL_AUTH_REJECTION_WINDOW_MS = 10 * 60_000;
 
 /**
+ * Host-network-event detector (transport-aware escalation).
+ *
+ * If at least MASS_TRANSPORT_DROP_THRESHOLD DISTINCT channels suffer a
+ * transport-level disconnect (428/408/503/515 / no-error network blip) within
+ * MASS_TRANSPORT_WINDOW_MS, the cause is the HOST losing its uplink (power
+ * blip, router/ISP/DNS down) — NOT a per-channel WhatsApp auth failure.
+ *
+ * WHY: on 2026-06-14T01:09Z a power blip at the host killed the router; all 14
+ * sockets dropped in the same second (querySrv ECONNREFUSED to Atlas + WA WS
+ * close together). On recovery WhatsApp answered the mass re-handshake with
+ * 401 "Connection Failure", which the auth-rejection streak then escalated to
+ * terminal status_logged_out on every channel — turning a 6-min blip into a
+ * permanent 14-channel outage needing manual re-pair. During a detected host
+ * event we suppress that escalation and keep reconnecting with backoff.
+ */
+export const MASS_TRANSPORT_DROP_THRESHOLD = 3;
+export const MASS_TRANSPORT_WINDOW_MS = 2 * 60_000;
+
+/**
+ * After a host-network event is detected, suppress terminal auth-rejection
+ * escalation for this long (rolling from the last transport drop). Gives the
+ * router/DNS time to recover and WhatsApp time to accept the re-auth before the
+ * gateway gives up and forces a QR re-pair. Genuine revocation still escalates
+ * once the grace expires and 401s persist.
+ */
+export const NETWORK_OUTAGE_GRACE_MS = 10 * 60_000;
+
+/**
  * Reasons that should NOT be auto-healed.
  *
  * Two categories:
