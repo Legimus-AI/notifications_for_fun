@@ -4,6 +4,7 @@ import { sendAlertToAllRecipients } from '../services/alertDelivery';
 import Channel from '../models/Channels';
 import {
   MAX_CONSECUTIVE_ALERTS,
+  MASS_UNHEALTHY_ALERT_THRESHOLD,
   HEALTH_CHECK_SCHEDULE,
   HEALTH_CHECK_TIMEZONE,
   MAX_HEAL_ATTEMPTS,
@@ -343,6 +344,58 @@ const notifyUnhealthyChannels = async (
   }
 };
 
+// In-memory rate limit for the aggregate mass-outage alert.
+// WHY 1h: the tick runs every 5min — without a cooldown an ongoing mass
+// outage would page 12x/hour; once it still re-pages hourly while unresolved.
+let lastMassAlertAt = 0;
+const MASS_ALERT_COOLDOWN_MS = 60 * 60_000;
+
+/**
+ * Send ONE aggregate alert on a systemic outage, BYPASSING the per-channel
+ * MAX_CONSECUTIVE_ALERTS cap (that cap silenced a 14-channel outage).
+ */
+const notifyMassOutage = async (
+  unhealthyCount: number,
+  totalCount: number,
+): Promise<void> => {
+  if (unhealthyCount < MASS_UNHEALTHY_ALERT_THRESHOLD) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastMassAlertAt < MASS_ALERT_COOLDOWN_MS) {
+    console.log(
+      `⏭️ Mass-outage alert suppressed (last sent ${Math.round((now - lastMassAlertAt) / 60_000)}min ago, cooldown 60min)`,
+    );
+    return;
+  }
+  lastMassAlertAt = now;
+
+  const message = `🚨 *MASS OUTAGE*: ${unhealthyCount}/${totalCount} channels unhealthy\n\nPer-channel alerts may be capped — check the gateway host/network NOW.\n\n⏰ ${new Date().toLocaleString(
+    'en-US',
+    { timeZone: 'UTC', dateStyle: 'short', timeStyle: 'short' },
+  )} UTC`;
+
+  console.log(
+    `📤 Dispatching MASS OUTAGE alert (${unhealthyCount}/${totalCount} channels unhealthy)...`,
+  );
+
+  const deliveryResults = await sendAlertToAllRecipients(message);
+
+  for (const deliveryResult of deliveryResults) {
+    const recipientLabel = deliveryResult.name ?? deliveryResult.recipient;
+    if (deliveryResult.ok) {
+      console.log(
+        `✅ Mass-outage alert via ${deliveryResult.channel} → ${recipientLabel} (msgId=${deliveryResult.messageId ?? 'n/a'})`,
+      );
+    } else {
+      console.error(
+        `❌ Mass-outage alert via ${deliveryResult.channel} → ${recipientLabel} failed: ${deliveryResult.error}`,
+      );
+    }
+  }
+};
+
 /**
  * Re-run isConnectionAlive on a known subset of channels (no Mongo round-trip)
  */
@@ -499,6 +552,12 @@ const executeHealthCheck = async (): Promise<void> => {
       );
 
       const stillUnhealthy = await attemptAutoHeal(unhealthy);
+
+      // Systemic outage → one aggregate alert, immune to the per-channel cap
+      await notifyMassOutage(
+        stillUnhealthy.length,
+        healthy.length + unhealthy.length,
+      );
 
       if (stillUnhealthy.length > 0) {
         console.log(
