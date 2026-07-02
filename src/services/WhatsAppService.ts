@@ -383,6 +383,27 @@ export class WhatsAppService extends EventEmitter {
         const channel = activeChannels[i];
 
         try {
+          // WHY: a session WhatsApp already revoked (persisted terminal
+          // auth-rejection streak) rejects EVERY fresh login — restoring it
+          // just re-enters the 401 loop until it re-escalates. Park it as
+          // logged_out up front so boot doesn't resurrect dead channels.
+          const channelConfig = (channel.config ?? {}) as WhatsAppAutomatedConfig;
+          const authRejectionStreak = channelConfig.authRejectionStreak ?? 0;
+          const streakAgeMs = channelConfig.authRejectionStreakStartedAt
+            ? Date.now() -
+              new Date(channelConfig.authRejectionStreakStartedAt).getTime()
+            : 0;
+          const isRevokedSession =
+            authRejectionStreak >= TERMINAL_AUTH_REJECTION_COUNT &&
+            streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS;
+          if (isRevokedSession) {
+            console.log(
+              `🚪 ${channel.channelId}: skipping restore — parked as logged_out (revoked session, streak ${authRejectionStreak})`,
+            );
+            await this.updateChannelStatus(channel.channelId, 'logged_out');
+            continue;
+          }
+
           console.log(
             `🔄 Restoring channel: ${channel.channelId} (${channel.name})`,
           );
