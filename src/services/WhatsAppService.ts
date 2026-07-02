@@ -990,12 +990,20 @@ export class WhatsAppService extends EventEmitter {
               Date.now() - new Date(streakStartedAt).getTime();
             if (
               streak >= TERMINAL_AUTH_REJECTION_COUNT &&
-              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS &&
-              !channelConfig.terminalNotifiedAt
+              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS
             ) {
               // Every fresh socket has been rejected for the whole window →
-              // no QR-less revival is possible. Declare terminal, notify the
-              // webhooks ONCE, and stop retrying.
+              // no QR-less revival is possible. Declare terminal and stop
+              // retrying. WHY parking is unconditional: it used to be gated
+              // on !terminalNotifiedAt (the once-only webhook latch); a stale
+              // latch — from a lost concurrent write or a manual /connect on
+              // an already-revoked channel — left channels 401-looping every
+              // 45s for days (observed streak 12,914). Only the WEBHOOK is
+              // deduped, scoped to the current streak.
+              const wasNotifiedThisStreak =
+                !!channelConfig.terminalNotifiedAt &&
+                new Date(channelConfig.terminalNotifiedAt).getTime() >=
+                  new Date(streakStartedAt).getTime();
               console.log(
                 `🚪 ${channelId} session revoked by WhatsApp (${streak} consecutive auth rejections over ${Math.round(streakAgeMs / 60_000)}min) — escalating to logged_out`,
               );
@@ -1004,7 +1012,9 @@ export class WhatsAppService extends EventEmitter {
               await this.updateChannelStatus(channelId, 'logged_out');
               await this.updateChannelConfig(channelId, {
                 connectedAt: null,
-                terminalNotifiedAt: new Date(),
+                ...(wasNotifiedThisStreak
+                  ? {}
+                  : { terminalNotifiedAt: new Date() }),
               });
               channelMetrics.record(channelId, 'logged_out', {
                 statusCode: disconnectStatusCode ?? null,
@@ -1013,7 +1023,9 @@ export class WhatsAppService extends EventEmitter {
                 attempt: streak,
                 status: 'logged_out',
               });
-              await fireTerminalDisconnectedWebhook();
+              if (!wasNotifiedThisStreak) {
+                await fireTerminalDisconnectedWebhook();
+              }
               escalatedToTerminal = true;
             }
           } catch (streakError) {
@@ -1134,17 +1146,16 @@ export class WhatsAppService extends EventEmitter {
 
       // A successful open DISPROVES revocation (a revoked session never gets
       // past "logging in"). Clear the persistent auth-rejection streak and
-      // re-arm the once-only webhook guard for future outages.
-      void this.updateChannelConfig(channelId, {
+      // re-arm the webhook guard for future outages. WHY awaited: fired
+      // unawaited, this clear raced the {phoneNumber, connectedAt} write a few
+      // lines below — the old read-modify-write updateChannelConfig lost it,
+      // resurrecting the stale streak/latch (proven: f97e6fc4 wrote streak=0
+      // and 22s later the next 401 resumed the streak at 17).
+      await this.updateChannelConfig(channelId, {
         authRejectionStreak: 0,
         authRejectionStreakStartedAt: null,
         terminalNotifiedAt: null,
-      }).catch((resetError) =>
-        console.error(
-          `❌ failed to clear auth-rejection streak for ${channelId}:`,
-          resetError,
-        ),
-      );
+      });
 
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);
@@ -2676,31 +2687,31 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Updates channel config with phoneNumber and other WhatsApp-specific data
+   * Updates channel config fields atomically via dot-path $set.
    */
   private async updateChannelConfig(
     channelId: string,
     configUpdate: Partial<any>,
   ): Promise<void> {
     try {
-      const channel = await Channel.findOne({ channelId });
-      if (channel) {
-        // Merge the new config with existing config
-        const updatedConfig = { ...channel.config, ...configUpdate };
-
-        await Channel.findOneAndUpdate(
-          { channelId },
-          {
-            config: updatedConfig,
-            lastStatusUpdate: new Date(),
-          },
-        );
-
-        console.log(
-          `📝 Updated config for channel ${channelId}:`,
-          configUpdate,
-        );
+      // WHY dot-path $set: the previous findOne → spread-merge →
+      // findOneAndUpdate replaced the WHOLE config, so two concurrent calls
+      // lost one write (the streak clear on 'open' was clobbered by the
+      // {phoneNumber, connectedAt} write → stale terminalNotifiedAt disabled
+      // terminal escalation forever). Field-level $set makes concurrent
+      // writers touch disjoint paths and never overwrite each other.
+      const setFields: Record<string, unknown> = {
+        lastStatusUpdate: new Date(),
+      };
+      for (const [key, value] of Object.entries(configUpdate)) {
+        setFields[`config.${key}`] = value;
       }
+      await Channel.findOneAndUpdate({ channelId }, { $set: setFields });
+
+      console.log(
+        `📝 Updated config for channel ${channelId}:`,
+        configUpdate,
+      );
     } catch (error) {
       console.error(
         `❌ Error updating channel config for ${channelId}:`,
