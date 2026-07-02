@@ -1,0 +1,162 @@
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Signal/libsignal.js b/node_modules/@whiskeysockets/baileys/lib/Signal/libsignal.js
+index beadd06..68c3c7d 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Signal/libsignal.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Signal/libsignal.js
+@@ -35,9 +35,12 @@ export function makeLibSignalRepository(auth, logger, pnToLIDFunc) {
+     const lidMapping = new LIDMappingStore(auth.keys, logger, pnToLIDFunc);
+     const storage = signalStorage(auth, lidMapping);
+     const parsedKeys = auth.keys;
++    // PATCH(Baileys#2640 companion): bound the migrated-session flag cache the same way;
++    // eviction only causes an idempotent re-migration check, TTL is checked lazily on get.
+     const migratedSessionCache = new LRUCache({
+-        ttl: 3 * 24 * 60 * 60 * 1000, // 7 days
+-        ttlAutopurge: true,
++        max: 10000,
++        ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
++        ttlAutopurge: false,
+         updateAgeOnGet: true
+     });
+     const ensureSenderKeyAndCreateSkdm = async (group, meId) => {
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Signal/lid-mapping.js b/node_modules/@whiskeysockets/baileys/lib/Signal/lid-mapping.js
+index c99bdf5..46099d3 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Signal/lid-mapping.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Signal/lid-mapping.js
+@@ -2,9 +2,12 @@ import { LRUCache } from 'lru-cache';
+ import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary/index.js';
+ export class LIDMappingStore {
+     constructor(keys, logger, pnToLIDFunc) {
++        // PATCH(Baileys#2640): `max` bounds the cache and `ttlAutopurge: false` drops the
++        // per-entry 3-day timer (TTL is checked lazily on get); evicted entries fall back to the DB.
+         this.mappingCache = new LRUCache({
+-            ttl: 3 * 24 * 60 * 60 * 1000, // 7 days
+-            ttlAutopurge: true,
++            max: 10000,
++            ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
++            ttlAutopurge: false,
+             updateAgeOnGet: true
+         });
+         this.inflightLIDLookups = new Map();
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
+index f2003ac..e3bad82 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
+@@ -880,9 +880,18 @@ export const makeMessagesRecvSocket = (config) => {
+                 break;
+             case 'link_code_companion_reg':
+                 const linkCodeCompanionReg = getBinaryNodeChild(node, 'link_code_companion_reg');
+-                const ref = toRequiredBuffer(getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_ref'));
+-                const primaryIdentityPublicKey = toRequiredBuffer(getBinaryNodeChildBuffer(linkCodeCompanionReg, 'primary_identity_pub'));
+-                const primaryEphemeralPublicKeyWrapped = toRequiredBuffer(getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_wrapped_primary_ephemeral_pub'));
++                const refBuffer = getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_ref');
++                const primaryIdentityPublicKeyBuffer = getBinaryNodeChildBuffer(linkCodeCompanionReg, 'primary_identity_pub');
++                const primaryEphemeralPublicKeyWrappedBuffer = getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_wrapped_primary_ephemeral_pub');
++                if (refBuffer === undefined ||
++                    primaryIdentityPublicKeyBuffer === undefined ||
++                    primaryEphemeralPublicKeyWrappedBuffer === undefined) {
++                    logger.debug({ id: node.attrs.id, type: node.attrs.type }, 'skipping empty link code companion registration');
++                    break;
++                }
++                const ref = toRequiredBuffer(refBuffer);
++                const primaryIdentityPublicKey = toRequiredBuffer(primaryIdentityPublicKeyBuffer);
++                const primaryEphemeralPublicKeyWrapped = toRequiredBuffer(primaryEphemeralPublicKeyWrappedBuffer);
+                 const codePairingPublicKey = await decipherLinkPublicKey(primaryEphemeralPublicKeyWrapped);
+                 const companionSharedKey = Curve.sharedKey(authState.creds.pairingEphemeralKeyPair.private, codePairingPublicKey);
+                 const random = randomBytes(32);
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js b/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js
+index 24a3583..6e38b3e 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js
+@@ -81,8 +81,14 @@ export function makeCacheableSignalKeyStore(store, logger, _cache) {
+  * @param logger logger to log events
+  * @returns SignalKeyStore with transaction capability
+  */
++// One instance per process: a per-socket AsyncLocalStorage leaks the heap under Node's legacy
++// async-context propagation, where every live instance tags every pending async resource. The
++// value is keyed by store token so a store only ever sees its own context, even when another
++// wrapped store runs inside its transaction.
++const txStorage = new AsyncLocalStorage();
+ export const addTransactionCapability = (state, logger, { maxCommitRetries, delayBetweenTriesMs }) => {
+-    const txStorage = new AsyncLocalStorage();
++    // Identifies this store's slot inside the shared transaction map
++    const storeToken = Symbol('signalTxStore');
+     // Queues for concurrency control (keyed by signal data type - bounded set)
+     const keyQueues = new Map();
+     // Transaction mutexes with reference counting for cleanup
+@@ -131,11 +137,17 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+             }
+         }
+     }
++    /**
++     * Resolve this store's transaction context from the shared async-local map
++     */
++    function getContext() {
++        return txStorage.getStore()?.get(storeToken);
++    }
+     /**
+      * Check if currently in a transaction
+      */
+     function isInTransaction() {
+-        return !!txStorage.getStore();
++        return !!getContext();
+     }
+     /**
+      * Commit transaction with retries
+@@ -164,7 +176,7 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+     }
+     return {
+         get: async (type, ids) => {
+-            const ctx = txStorage.getStore();
++            const ctx = getContext();
+             if (!ctx) {
+                 // No transaction - direct read without exclusive lock for concurrency
+                 return state.get(type, ids);
+@@ -191,7 +203,7 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+             return result;
+         },
+         set: async (data) => {
+-            const ctx = txStorage.getStore();
++            const ctx = getContext();
+             if (!ctx) {
+                 // No transaction - direct write with queue protection
+                 const types = Object.keys(data);
+@@ -229,9 +241,9 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+         },
+         isInTransaction,
+         transaction: async (work, key) => {
+-            const existing = txStorage.getStore();
+-            // Nested transaction - reuse existing context
+-            if (existing) {
++            const stores = txStorage.getStore();
++            // Nested transaction on this same store - reuse existing context
++            if (stores?.get(storeToken)) {
+                 logger.trace('reusing existing transaction context');
+                 return work();
+             }
+@@ -245,9 +257,12 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+                         mutations: {},
+                         dbQueries: 0
+                     };
++                    // Inherit contexts from outer stores so they stay isolated by token
++                    const next = new Map(stores);
++                    next.set(storeToken, ctx);
+                     logger.trace('entering transaction');
+                     try {
+-                        const result = await txStorage.run(ctx, work);
++                        const result = await txStorage.run(next, work);
+                         // Commit mutations
+                         await commitWithRetry(ctx.mutations);
+                         logger.trace({ dbQueries: ctx.dbQueries }, 'transaction completed');
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js b/node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js
+index f26782b..650b4cf 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js
+@@ -53,7 +53,8 @@ export const generateLoginNode = (userJid, config) => {
+     const { user, device } = jidDecode(userJid);
+     const payload = {
+         ...getClientPayload(config),
+-        passive: true,
++        // Existing companion sessions need an active login. Passive login can be rejected with 428.
++        passive: false,
+         pull: true,
+         username: +user,
+         device: device,
