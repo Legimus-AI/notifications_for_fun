@@ -604,12 +604,15 @@ export class WhatsAppService extends EventEmitter {
         )} (isLatest: ${isLatest})`,
       );
 
-      // Create socket with Chrome Windows simulation for anti-ban
-      // This simulates a real Chrome browser on Windows to reduce ban risk
+      // WHY Browsers.ubuntu('Chrome') (WEB_BROWSER tuple): since ~2026-06-29
+      // WhatsApp rejects WIN32/DARWIN Desktop sub-platform tuples with a fast
+      // 428 "Connection Terminated" right after the handshake — Baileys
+      // #2677/#2671. The previous Browsers.windows('WhatsApp Web') "anti-ban"
+      // simulation now triggers exactly the rejection it tried to avoid.
       const sock = makeWASocket({
         version, // Use the fetched version
         auth,
-        browser: Browsers.windows('WhatsApp Web'),
+        browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: false,
         markOnlineOnConnect: false, // Critical: prevents auto online status
         syncFullHistory: false, // Reduces bandwidth and suspicion
