@@ -1000,7 +1000,7 @@ export class WhatsAppService extends EventEmitter {
               // an already-revoked channel — left channels 401-looping every
               // 45s for days (observed streak 12,914). Only the WEBHOOK is
               // deduped, scoped to the current streak.
-              const alreadyNotifiedThisStreak =
+              const wasNotifiedThisStreak =
                 !!channelConfig.terminalNotifiedAt &&
                 new Date(channelConfig.terminalNotifiedAt).getTime() >=
                   new Date(streakStartedAt).getTime();
@@ -1012,7 +1012,7 @@ export class WhatsAppService extends EventEmitter {
               await this.updateChannelStatus(channelId, 'logged_out');
               await this.updateChannelConfig(channelId, {
                 connectedAt: null,
-                ...(alreadyNotifiedThisStreak
+                ...(wasNotifiedThisStreak
                   ? {}
                   : { terminalNotifiedAt: new Date() }),
               });
@@ -1023,7 +1023,7 @@ export class WhatsAppService extends EventEmitter {
                 attempt: streak,
                 status: 'logged_out',
               });
-              if (!alreadyNotifiedThisStreak) {
+              if (!wasNotifiedThisStreak) {
                 await fireTerminalDisconnectedWebhook();
               }
               escalatedToTerminal = true;
