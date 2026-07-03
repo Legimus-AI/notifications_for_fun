@@ -78,6 +78,12 @@ Uses `@whiskeysockets/baileys` for WhatsApp Web API with production-grade featur
 
 See `WHATSAPP_INTEGRATION.md` for detailed API documentation and usage examples.
 
+For rich WhatsApp/Baileys element capabilities, always read
+`docs/WHATSAPP_BAILEYS_CAPABILITIES.md` before experimenting. It contains the
+verified map for native-flow buttons, carousels, commerce/order cards, polls,
+events, payment surfaces, newsletter invites, PTV/video notes, GIF playback,
+Status vs Channels, and raw proto failure modes.
+
 ### Slack Integration
 
 Direct Slack API integration for sending messages:

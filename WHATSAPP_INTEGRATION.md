@@ -22,6 +22,19 @@ The WhatsApp integration uses:
 - ✅ Message status tracking (sent, delivered, read)
 - ✅ Graceful disconnection and cleanup
 
+## Rich Element Capability Map
+
+Before adding or testing WhatsApp rich elements, read
+[`docs/WHATSAPP_BAILEYS_CAPABILITIES.md`](docs/WHATSAPP_BAILEYS_CAPABILITIES.md).
+It documents the current Baileys capabilities verified on 2026-06-17:
+native-flow buttons, carousels, commerce cards, order/cart cards, polls,
+events, payment surfaces, newsletter invites, PTV/video notes, GIF playback,
+Status limitations, and WhatsApp Channels guidance.
+
+Do not treat HTTP 200 as delivery proof. Check Baileys ack status in PM2 logs;
+server rejections such as `405`, `473`, and `479` were observed for gated or
+malformed elements.
+
 ## API Endpoints
 
 ### 1. Create WhatsApp Channel
