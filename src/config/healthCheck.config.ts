@@ -11,6 +11,14 @@
 export const MAX_CONSECUTIVE_ALERTS = 3;
 
 /**
+ * Unhealthy channels at once that count as a systemic (mass) outage.
+ * WHY: this many simultaneous failures is host/network/WA-side, not N
+ * independent channel problems — it triggers ONE aggregate alert that
+ * bypasses MAX_CONSECUTIVE_ALERTS (which silenced a 14-channel outage).
+ */
+export const MASS_UNHEALTHY_ALERT_THRESHOLD = 5;
+
+/**
  * Health check cron schedule (every 5 minutes)
  */
 export const HEALTH_CHECK_SCHEDULE = '*/5 * * * *';

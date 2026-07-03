@@ -16,6 +16,7 @@ import makeWASocket, {
   generateWAMessageFromContent,
   normalizeMessageContent,
   isJidGroup,
+  BinaryNode,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -896,6 +897,27 @@ export class WhatsAppService extends EventEmitter {
         const channel = activeChannels[i];
 
         try {
+          // WHY: a session WhatsApp already revoked (persisted terminal
+          // auth-rejection streak) rejects EVERY fresh login — restoring it
+          // just re-enters the 401 loop until it re-escalates. Park it as
+          // logged_out up front so boot doesn't resurrect dead channels.
+          const channelConfig = (channel.config ?? {}) as WhatsAppAutomatedConfig;
+          const authRejectionStreak = channelConfig.authRejectionStreak ?? 0;
+          const streakAgeMs = channelConfig.authRejectionStreakStartedAt
+            ? Date.now() -
+              new Date(channelConfig.authRejectionStreakStartedAt).getTime()
+            : 0;
+          const isRevokedSession =
+            authRejectionStreak >= TERMINAL_AUTH_REJECTION_COUNT &&
+            streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS;
+          if (isRevokedSession) {
+            console.log(
+              `🚪 ${channel.channelId}: skipping restore — parked as logged_out (revoked session, streak ${authRejectionStreak})`,
+            );
+            await this.updateChannelStatus(channel.channelId, 'logged_out');
+            continue;
+          }
+
           console.log(
             `🔄 Restoring channel: ${channel.channelId} (${channel.name})`,
           );
@@ -1117,12 +1139,15 @@ export class WhatsAppService extends EventEmitter {
         )} (isLatest: ${isLatest})`,
       );
 
-      // Create socket with Chrome Windows simulation for anti-ban
-      // This simulates a real Chrome browser on Windows to reduce ban risk
+      // WHY Browsers.ubuntu('Chrome') (WEB_BROWSER tuple): since ~2026-06-29
+      // WhatsApp rejects WIN32/DARWIN Desktop sub-platform tuples with a fast
+      // 428 "Connection Terminated" right after the handshake — Baileys
+      // #2677/#2671. The previous Browsers.windows('WhatsApp Web') "anti-ban"
+      // simulation now triggers exactly the rejection it tried to avoid.
       const sock = makeWASocket({
         version, // Use the fetched version
         auth,
-        browser: Browsers.windows('WhatsApp Web'),
+        browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: false,
         markOnlineOnConnect: false, // Critical: prevents auto online status
         syncFullHistory: false, // Reduces bandwidth and suspicion
@@ -1152,6 +1177,41 @@ export class WhatsAppService extends EventEmitter {
       // Store connection
       this.connections.set(channelId, sock);
       this.connectionStatus.set(channelId, 'connecting');
+
+      // WHY: WhatsApp's passkey rollout (Baileys #2672, ~2026-06-29) sends
+      // passkey_prologue_request / crsc_continuation notifications during
+      // pairing; Baileys has no handler for them, never ACKs, and the server
+      // waits forever → device linking hangs until timeout. ACKing immediately
+      // unblocks the flow (the owner still approves the passkey on the phone).
+      for (const passkeyNotificationType of [
+        'passkey_prologue_request',
+        'crsc_continuation',
+      ]) {
+        sock.ws.on(
+          `CB:notification,type:${passkeyNotificationType}`,
+          async (notificationNode: BinaryNode) => {
+            try {
+              await sock.sendNode({
+                tag: 'ack',
+                attrs: {
+                  id: notificationNode.attrs.id,
+                  class: 'notification',
+                  to: notificationNode.attrs.from,
+                  type: notificationNode.attrs.type,
+                },
+              });
+              console.log(
+                `🔑 ${channelId} ACKed ${passkeyNotificationType} (passkey pairing flow)`,
+              );
+            } catch (ackError) {
+              console.error(
+                `❌ ${channelId} failed to ACK ${passkeyNotificationType}:`,
+                ackError,
+              );
+            }
+          },
+        );
+      }
 
       // Handle connection updates
       sock.ev.on('connection.update', async (update) => {
@@ -1503,12 +1563,20 @@ export class WhatsAppService extends EventEmitter {
               Date.now() - new Date(streakStartedAt).getTime();
             if (
               streak >= TERMINAL_AUTH_REJECTION_COUNT &&
-              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS &&
-              !channelConfig.terminalNotifiedAt
+              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS
             ) {
               // Every fresh socket has been rejected for the whole window →
-              // no QR-less revival is possible. Declare terminal, notify the
-              // webhooks ONCE, and stop retrying.
+              // no QR-less revival is possible. Declare terminal and stop
+              // retrying. WHY parking is unconditional: it used to be gated
+              // on !terminalNotifiedAt (the once-only webhook latch); a stale
+              // latch — from a lost concurrent write or a manual /connect on
+              // an already-revoked channel — left channels 401-looping every
+              // 45s for days (observed streak 12,914). Only the WEBHOOK is
+              // deduped, scoped to the current streak.
+              const wasNotifiedThisStreak =
+                !!channelConfig.terminalNotifiedAt &&
+                new Date(channelConfig.terminalNotifiedAt).getTime() >=
+                  new Date(streakStartedAt).getTime();
               console.log(
                 `🚪 ${channelId} session revoked by WhatsApp (${streak} consecutive auth rejections over ${Math.round(streakAgeMs / 60_000)}min) — escalating to logged_out`,
               );
@@ -1517,7 +1585,9 @@ export class WhatsAppService extends EventEmitter {
               await this.updateChannelStatus(channelId, 'logged_out');
               await this.updateChannelConfig(channelId, {
                 connectedAt: null,
-                terminalNotifiedAt: new Date(),
+                ...(wasNotifiedThisStreak
+                  ? {}
+                  : { terminalNotifiedAt: new Date() }),
               });
               channelMetrics.record(channelId, 'logged_out', {
                 statusCode: disconnectStatusCode ?? null,
@@ -1526,7 +1596,9 @@ export class WhatsAppService extends EventEmitter {
                 attempt: streak,
                 status: 'logged_out',
               });
-              await fireTerminalDisconnectedWebhook();
+              if (!wasNotifiedThisStreak) {
+                await fireTerminalDisconnectedWebhook();
+              }
               escalatedToTerminal = true;
             }
           } catch (streakError) {
@@ -1647,17 +1719,16 @@ export class WhatsAppService extends EventEmitter {
 
       // A successful open DISPROVES revocation (a revoked session never gets
       // past "logging in"). Clear the persistent auth-rejection streak and
-      // re-arm the once-only webhook guard for future outages.
-      void this.updateChannelConfig(channelId, {
+      // re-arm the webhook guard for future outages. WHY awaited: fired
+      // unawaited, this clear raced the {phoneNumber, connectedAt} write a few
+      // lines below — the old read-modify-write updateChannelConfig lost it,
+      // resurrecting the stale streak/latch (proven: f97e6fc4 wrote streak=0
+      // and 22s later the next 401 resumed the streak at 17).
+      await this.updateChannelConfig(channelId, {
         authRejectionStreak: 0,
         authRejectionStreakStartedAt: null,
         terminalNotifiedAt: null,
-      }).catch((resetError) =>
-        console.error(
-          `❌ failed to clear auth-rejection streak for ${channelId}:`,
-          resetError,
-        ),
-      );
+      });
 
       // Reset preload attempts on successful connection
       this.preloadAttempts.delete(channelId);
@@ -3189,31 +3260,31 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Updates channel config with phoneNumber and other WhatsApp-specific data
+   * Updates channel config fields atomically via dot-path $set.
    */
   private async updateChannelConfig(
     channelId: string,
     configUpdate: Partial<any>,
   ): Promise<void> {
     try {
-      const channel = await Channel.findOne({ channelId });
-      if (channel) {
-        // Merge the new config with existing config
-        const updatedConfig = { ...channel.config, ...configUpdate };
-
-        await Channel.findOneAndUpdate(
-          { channelId },
-          {
-            config: updatedConfig,
-            lastStatusUpdate: new Date(),
-          },
-        );
-
-        console.log(
-          `📝 Updated config for channel ${channelId}:`,
-          configUpdate,
-        );
+      // WHY dot-path $set: the previous findOne → spread-merge →
+      // findOneAndUpdate replaced the WHOLE config, so two concurrent calls
+      // lost one write (the streak clear on 'open' was clobbered by the
+      // {phoneNumber, connectedAt} write → stale terminalNotifiedAt disabled
+      // terminal escalation forever). Field-level $set makes concurrent
+      // writers touch disjoint paths and never overwrite each other.
+      const setFields: Record<string, unknown> = {
+        lastStatusUpdate: new Date(),
+      };
+      for (const [key, value] of Object.entries(configUpdate)) {
+        setFields[`config.${key}`] = value;
       }
+      await Channel.findOneAndUpdate({ channelId }, { $set: setFields });
+
+      console.log(
+        `📝 Updated config for channel ${channelId}:`,
+        configUpdate,
+      );
     } catch (error) {
       console.error(
         `❌ Error updating channel config for ${channelId}:`,

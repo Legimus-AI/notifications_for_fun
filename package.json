@@ -19,7 +19,8 @@
     "coverage": "npm run coverage:merge && npm run coverage:merge-report",
     "coverage:clean": "rm -rf .nyc_output && rm -rf coverage",
     "coverage:merge": "istanbul-merge --out coverage/merged/coverage-final.json ./coverage/unit/coverage-final.json ./coverage/e2e/coverage-final.json",
-    "coverage:merge-report": "nyc report --reporter=lcov --reporter=text --reporter=json --temp-dir=./coverage/merged --report-dir=./coverage/merged"
+    "coverage:merge-report": "nyc report --reporter=lcov --reporter=text --reporter=json --temp-dir=./coverage/merged --report-dir=./coverage/merged",
+    "postinstall": "patch-package"
   },
   "nyc": {
     "reporter": [
@@ -109,6 +110,7 @@
     "mongo-seeding": "^3.7.2",
     "nodemon": "^3.0.1",
     "nyc": "^15.1.0",
+    "patch-package": "^8.0.1",
     "prettier": "^3.0.3",
     "remark-cli": "^12.0.0",
     "ts-node": "^10.9.1",

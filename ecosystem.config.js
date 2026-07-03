@@ -44,6 +44,8 @@ module.exports = {
       max_restarts: 15,
       restart_delay: 10_000,
       max_memory_restart: '1500M',
+      // Applying this requires `pm2 delete` + `pm2 start` (a plain restart keeps the old value).
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     },
   ],
 };
