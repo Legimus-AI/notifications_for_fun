@@ -12,6 +12,7 @@ import makeWASocket, {
   GroupMetadata,
   makeCacheableSignalKeyStore,
   fetchLatestWaWebVersion,
+  BinaryNode,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
@@ -663,6 +664,41 @@ export class WhatsAppService extends EventEmitter {
       // Store connection
       this.connections.set(channelId, sock);
       this.connectionStatus.set(channelId, 'connecting');
+
+      // WHY: WhatsApp's passkey rollout (Baileys #2672, ~2026-06-29) sends
+      // passkey_prologue_request / crsc_continuation notifications during
+      // pairing; Baileys has no handler for them, never ACKs, and the server
+      // waits forever → device linking hangs until timeout. ACKing immediately
+      // unblocks the flow (the owner still approves the passkey on the phone).
+      for (const passkeyNotificationType of [
+        'passkey_prologue_request',
+        'crsc_continuation',
+      ]) {
+        sock.ws.on(
+          `CB:notification,type:${passkeyNotificationType}`,
+          async (notificationNode: BinaryNode) => {
+            try {
+              await sock.sendNode({
+                tag: 'ack',
+                attrs: {
+                  id: notificationNode.attrs.id,
+                  class: 'notification',
+                  to: notificationNode.attrs.from,
+                  type: notificationNode.attrs.type,
+                },
+              });
+              console.log(
+                `🔑 ${channelId} ACKed ${passkeyNotificationType} (passkey pairing flow)`,
+              );
+            } catch (ackError) {
+              console.error(
+                `❌ ${channelId} failed to ACK ${passkeyNotificationType}:`,
+                ackError,
+              );
+            }
+          },
+        );
+      }
 
       // Handle connection updates
       sock.ev.on('connection.update', async (update) => {
