@@ -45,6 +45,9 @@ import {
   MASS_TRANSPORT_DROP_THRESHOLD,
   MASS_TRANSPORT_WINDOW_MS,
   NETWORK_OUTAGE_GRACE_MS,
+  GHOST_RECOVERY_DELAY_MS,
+  MAX_GHOST_RECOVERIES,
+  GHOST_OPEN_SLACK_MS,
 } from '../config/healthCheck.config';
 import { channelMetrics } from './ChannelMetricsService';
 
@@ -784,6 +787,21 @@ export class WhatsAppService extends EventEmitter {
   // Set by gracefulShutdownAll so pending reconnect timers that fire mid-shutdown
   // don't spawn a fresh socket the SIGKILL then yanks (→ ghost slot → conflict).
   private isShuttingDown = false;
+  // Serializes connectChannel per channel. WHY: two same-second callers (the
+  // transitory reconnect timer + the auto-heal cron, 2026-07-07 incident) both
+  // passed the connections.has() check during the ~3s of awaits before
+  // connections.set → two sockets with the same device identity → the loser of
+  // the map race became an invisible orphan holding the WhatsApp slot → every
+  // later reconnect 401-looped into a false terminal parking.
+  private connectInFlight: Map<string, Promise<void>> = new Map();
+  // Every not-yet-destroyed socket per channel — INCLUDING orphans that lost
+  // the connections-map slot. Lets parking/disconnect/ghost-recovery destroy
+  // ALL of them, which is the only way to guarantee the device slot is free.
+  private liveSockets: Map<string, Set<WASocket>> = new Map();
+  // Ghost-recovery cycles within the current auth-rejection streak (cleared on
+  // a stable open). Caps the "opened during streak → conflict, not revocation"
+  // rescue so a session revoked right after an open still parks eventually.
+  private ghostRecoveryAttempts: Map<string, number> = new Map();
 
   constructor() {
     super();
@@ -850,24 +868,27 @@ export class WhatsAppService extends EventEmitter {
       this.stableTimers.delete(channelId);
     }
 
-    const channelIds = Array.from(this.connections.keys());
+    // Include channels whose only remaining socket is an ORPHAN (outside the
+    // connections map) — leaving one alive across a restart keeps the device
+    // slot busy and 401-conflicts the restored socket.
+    const channelIds = Array.from(
+      new Set([...this.connections.keys(), ...this.liveSockets.keys()]),
+    );
     if (channelIds.length === 0) {
       console.log('⏭️ No active WhatsApp sockets to close');
       return;
     }
     console.log(
-      `🔌 Gracefully closing ${channelIds.length} WhatsApp socket(s) before shutdown`,
+      `🔌 Gracefully closing sockets for ${channelIds.length} channel(s) before shutdown`,
     );
     await Promise.allSettled(
       channelIds.map(async (channelId) => {
-        const sock = this.connections.get(channelId);
-        if (!sock) return;
         try {
           this.connectionStatus.set(channelId, 'shutting_down');
           // Full teardown: end() alone leaks listeners; here we also want the
           // device slot freed cleanly so the next boot reconnects without QR.
-          this.teardownSocket(channelId, sock);
-          console.log(`✅ Socket closed cleanly for ${channelId}`);
+          this.destroyAllSocketsForChannel(channelId);
+          console.log(`✅ Socket(s) closed cleanly for ${channelId}`);
         } catch (error) {
           console.warn(`⚠️ Error closing socket for ${channelId}:`, error);
         }
@@ -1091,9 +1112,49 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Connects or reconnects a WhatsApp channel
+   * Connects or reconnects a WhatsApp channel (serialized per channel)
    */
-  async connectChannel(channelId: string, phoneNumber?: string): Promise<void> {
+  async connectChannel(
+    channelId: string,
+    phoneNumber?: string,
+    options: { allowPairing?: boolean } = {},
+  ): Promise<void> {
+    // WHY: concurrent callers must JOIN the in-flight attempt, never spawn a
+    // second socket — the loser of the connections.set race becomes an orphan
+    // that holds the WhatsApp device slot and 401-conflicts every reconnect.
+    // Exception: a human pairing-intent call must NOT be swallowed by an
+    // automatic attempt (which captured allowPairing=false) — wait for the
+    // in-flight attempt to settle, then run its own attempt.
+    let inFlight = this.connectInFlight.get(channelId);
+    while (inFlight) {
+      if (!options.allowPairing) {
+        console.log(
+          `⏭️ ${channelId} connect already in flight — joining the existing attempt`,
+        );
+        return inFlight;
+      }
+      console.log(
+        `⏳ ${channelId} waiting for in-flight connect before human pairing attempt`,
+      );
+      await inFlight.catch(() => undefined);
+      inFlight = this.connectInFlight.get(channelId);
+    }
+    const attempt = this.doConnectChannel(channelId, phoneNumber, options).finally(
+      () => {
+        if (this.connectInFlight.get(channelId) === attempt) {
+          this.connectInFlight.delete(channelId);
+        }
+      },
+    );
+    this.connectInFlight.set(channelId, attempt);
+    return attempt;
+  }
+
+  private async doConnectChannel(
+    channelId: string,
+    phoneNumber?: string,
+    options: { allowPairing?: boolean } = {},
+  ): Promise<void> {
     try {
       console.log(`🔄 Connecting WhatsApp channel: ${channelId}`);
 
@@ -1103,9 +1164,9 @@ export class WhatsAppService extends EventEmitter {
       // auto-heal cron, /connect endpoint). Without this guard, parallel sockets
       // race and cascade into permanent logged_out. Always close any existing
       // socket first, then wait briefly for the close to propagate.
-      if (this.connections.has(channelId)) {
+      if (this.connections.has(channelId) || this.liveSockets.has(channelId)) {
         console.log(
-          `🔌 Existing socket detected for ${channelId} — resetting before reconnect to avoid <conflict type=replaced>`,
+          `🔌 Existing/orphan socket(s) detected for ${channelId} — resetting before reconnect to avoid <conflict type=replaced>`,
         );
         await this.resetSocketConnection(channelId);
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1176,6 +1237,7 @@ export class WhatsAppService extends EventEmitter {
 
       // Store connection
       this.connections.set(channelId, sock);
+      this.registerSocket(channelId, sock);
       this.connectionStatus.set(channelId, 'connecting');
 
       // WHY: WhatsApp's passkey rollout (Baileys #2672, ~2026-06-29) sends
@@ -1215,26 +1277,38 @@ export class WhatsAppService extends EventEmitter {
 
       // Handle connection updates
       sock.ev.on('connection.update', async (update) => {
-        await this.handleConnectionUpdate(channelId, update, phoneNumber, sock);
+        await this.handleConnectionUpdate(
+          channelId,
+          update,
+          phoneNumber,
+          sock,
+          options.allowPairing === true,
+        );
       });
 
       // Handle credential updates
       sock.ev.on('creds.update', async () => {
+        // WHY: creds from a socket that lost the map slot must not clobber
+        // the valid creds in Mongo — and the emitter is a live duplicate.
+        if (this.dropIfOrphan(channelId, sock, 'creds.update')) return;
         await this.saveCreds(channelId, auth.creds);
       });
 
       // Handle incoming messages
       sock.ev.on('messages.upsert', async (m) => {
+        if (this.dropIfOrphan(channelId, sock, 'messages.upsert')) return;
         await this.handleIncomingMessages(channelId, m);
       });
 
       // Handle message status updates
       sock.ev.on('messages.update', async (updates) => {
+        if (this.dropIfOrphan(channelId, sock, 'messages.update')) return;
         await this.handleMessageStatusUpdates(channelId, updates);
       });
 
       // Handle groups update for metadata caching
       sock.ev.on('groups.update', async (updates) => {
+        if (this.dropIfOrphan(channelId, sock, 'groups.update')) return;
         console.log(
           `🔄 Groups updated for channel ${channelId}:`,
           updates.length,
@@ -1269,11 +1343,13 @@ export class WhatsAppService extends EventEmitter {
 
       // Handle incoming calls
       sock.ev.on('call', async (callEvents) => {
+        if (this.dropIfOrphan(channelId, sock, 'call')) return;
         await this.handleIncomingCalls(channelId, callEvents);
       });
 
       // Handle LID mapping updates (Baileys 7 requirement)
       sock.ev.on('lid-mapping.update', async (mapping) => {
+        if (this.dropIfOrphan(channelId, sock, 'lid-mapping.update')) return;
         if (process.env.DEBUG_BAILEYS_PAYLOADS === 'true') {
           console.log(
             `🔄 LID mapping update for channel ${channelId}:`,
@@ -1328,11 +1404,13 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Arms (or re-arms) the steady conflict-cooldown reconnect for a channel.
+   * Arms (or re-arms) a delayed reconnect for a channel (steady conflict
+   * cooldown by default; ghost recovery passes its own longer delay).
    */
   private scheduleConflictCooldown(
     channelId: string,
     phoneNumber?: string,
+    delayMs = CONFLICT_COOLDOWN_MS,
   ): void {
     const existingCooldown = this.reconnectTimers.get(channelId);
     if (existingCooldown) clearTimeout(existingCooldown);
@@ -1349,7 +1427,7 @@ export class WhatsAppService extends EventEmitter {
         // detector — keep progressing.
         this.scheduleConflictCooldown(channelId, phoneNumber);
       });
-    }, CONFLICT_COOLDOWN_MS);
+    }, delayMs);
     t.unref();
     this.reconnectTimers.set(channelId, t);
   }
@@ -1359,6 +1437,7 @@ export class WhatsAppService extends EventEmitter {
     update: Partial<ConnectionState>,
     phoneNumber?: string,
     eventSock?: WASocket,
+    allowPairing = false,
   ) {
     // Check if channel still exists or is being disconnected before processing events
     const currentStatus = this.connectionStatus.get(channelId);
@@ -1366,6 +1445,12 @@ export class WhatsAppService extends EventEmitter {
       console.log(
         `⚠️ Ignoring connection update for deleted channel: ${channelId}`,
       );
+      // A socket still emitting events for an unmapped channel is an orphan
+      // (e.g. it survived a terminal parking) — destroy it so it can't keep
+      // holding the WhatsApp device slot and 401-conflict future reconnects.
+      if (eventSock) {
+        this.destroyOrphanSocket(channelId, eventSock, 'deleted channel');
+      }
       return;
     }
 
@@ -1396,30 +1481,32 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (connection === 'connecting' && phoneNumber) {
-      // Request pairing code if phone number provided
-      try {
-        const sock = this.connections.get(channelId);
-        if (sock && !sock.authState.creds.registered) {
-          const code = await sock.requestPairingCode(phoneNumber);
-          await this.updateChannelStatus(channelId, 'pairing_code_ready');
-          this.emit('pairing-code', channelId, code);
+      const sock = eventSock ?? this.connections.get(channelId);
+      if (sock && !sock.authState.creds.registered) {
+        if (!allowPairing) {
+          // WHY: auto-reconnects must NEVER request a pairing code — creds can
+          // read as unregistered mid-rotation, and the resulting pairing-mode
+          // socket is rogue registration traffic that lingers waiting for a
+          // code nobody will type (2026-07-06/07: 5 codes fired mid-401-loop).
+          console.warn(
+            `⚠️ ${channelId} creds read as unregistered during auto-reconnect — NOT requesting pairing code`,
+          );
+        } else {
+          try {
+            const code = await sock.requestPairingCode(phoneNumber);
+            await this.updateChannelStatus(channelId, 'pairing_code_ready');
+            this.emit('pairing-code', channelId, code);
+          } catch (error) {
+            console.error(
+              `❌ Error requesting pairing code for ${channelId}:`,
+              error,
+            );
+          }
         }
-      } catch (error) {
-        console.error(
-          `❌ Error requesting pairing code for ${channelId}:`,
-          error,
-        );
       }
     }
 
     if (connection === 'close') {
-      // A close cancels the pending stability reset: a connection that dropped
-      // before proving stable must NOT clear its conflict-attempt budget.
-      const pendingStable = this.stableTimers.get(channelId);
-      if (pendingStable) {
-        clearTimeout(pendingStable);
-        this.stableTimers.delete(channelId);
-      }
       const disconnectError = lastDisconnect?.error as Boom | undefined;
       const disconnectStatusCode = disconnectError?.output?.statusCode;
       const disconnectReasonName =
@@ -1452,11 +1539,22 @@ export class WhatsAppService extends EventEmitter {
       // timer. Just drop the stale socket's own listeners/transport and bail.
       const liveSock = this.connections.get(channelId);
       if (eventSock && liveSock && liveSock !== eventSock) {
-        console.log(
-          `⚠️ ${channelId} stale 'close' from a replaced socket — ignoring (live socket untouched)`,
+        this.destroyOrphanSocket(
+          channelId,
+          eventSock,
+          "stale 'close' from a replaced socket — live socket untouched",
         );
-        this.destroySocketResources(eventSock);
         return;
+      }
+
+      // A close cancels the pending stability reset: a connection that dropped
+      // before proving stable must NOT clear its conflict/ghost budgets.
+      // WHY after the identity guard: a stale close from a replaced socket
+      // must not cancel the LIVE socket's stability timer.
+      const pendingStable = this.stableTimers.get(channelId);
+      if (pendingStable) {
+        clearTimeout(pendingStable);
+        this.stableTimers.delete(channelId);
       }
 
       // T8: tear down the dead socket COMPLETELY before deciding what to do
@@ -1507,8 +1605,12 @@ export class WhatsAppService extends EventEmitter {
 
       if (isTerminal) {
         console.log(`🚪 ${channelId} logged out (terminal: ${disconnectReasonName})`);
+        // Quarantine: kill orphans too, so the device slot is truly free for
+        // the human re-pair (a surviving duplicate would conflict the new QR).
+        this.destroyAllSocketsForChannel(channelId);
         this.reconnectAttempts.delete(channelId);
         this.conflictAlerted.delete(channelId);
+        this.ghostRecoveryAttempts.delete(channelId);
         await this.updateChannelStatus(channelId, 'logged_out');
         // WHY: connectedAt drives the "Connected since" UI marker; leaving it
         // set makes a logged-out channel look connected. Clear it on logout.
@@ -1547,6 +1649,7 @@ export class WhatsAppService extends EventEmitter {
           );
         }
         let escalatedToTerminal = false;
+        let escalatedToGhostRecovery = false;
         if (isAuthRejection) {
           try {
             const channelDoc = await Channel.findOne({ channelId });
@@ -1561,10 +1664,49 @@ export class WhatsAppService extends EventEmitter {
             });
             const streakAgeMs =
               Date.now() - new Date(streakStartedAt).getTime();
-            if (
+            const streakIsTerminal =
               streak >= TERMINAL_AUTH_REJECTION_COUNT &&
-              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS
+              streakAgeMs >= TERMINAL_AUTH_REJECTION_WINDOW_MS;
+            // Ghost detector: a revoked session can NEVER open — so an open
+            // (config.connectedAt) at/after the streak start means these 401s
+            // are a conflict against OUR OWN duplicate socket, not a
+            // revocation (2026-07-07: false-positive parking of b3c83f00).
+            const lastOpenAtMs = channelConfig.connectedAt
+              ? new Date(channelConfig.connectedAt).getTime()
+              : 0;
+            const openedDuringStreak =
+              lastOpenAtMs >=
+              new Date(streakStartedAt).getTime() - GHOST_OPEN_SLACK_MS;
+            const priorGhostAttempts =
+              this.ghostRecoveryAttempts.get(channelId) ?? 0;
+            if (
+              streakIsTerminal &&
+              openedDuringStreak &&
+              priorGhostAttempts < MAX_GHOST_RECOVERIES
             ) {
+              const ghostAttempt = priorGhostAttempts + 1;
+              this.ghostRecoveryAttempts.set(channelId, ghostAttempt);
+              console.warn(
+                `👻 ${channelId} 401 streak ${streak} but the session OPENED during the streak — self-conflict, not revocation. ` +
+                  `Ghost recovery ${ghostAttempt}/${MAX_GHOST_RECOVERIES}: destroying all sockets, ONE clean reconnect in ${Math.round(GHOST_RECOVERY_DELAY_MS / 1000)}s.`,
+              );
+              this.destroyAllSocketsForChannel(channelId);
+              this.reconnectAttempts.delete(channelId);
+              await this.updateChannelStatus(channelId, 'connecting');
+              channelMetrics.record(channelId, 'ghost_recovery', {
+                statusCode: disconnectStatusCode ?? null,
+                reason: disconnectReasonName,
+                message: disconnectMessage,
+                attempt: ghostAttempt,
+                status: 'connecting',
+              });
+              this.scheduleConflictCooldown(
+                channelId,
+                phoneNumber,
+                GHOST_RECOVERY_DELAY_MS,
+              );
+              escalatedToGhostRecovery = true;
+            } else if (streakIsTerminal) {
               // Every fresh socket has been rejected for the whole window →
               // no QR-less revival is possible. Declare terminal and stop
               // retrying. WHY parking is unconditional: it used to be gated
@@ -1580,8 +1722,13 @@ export class WhatsAppService extends EventEmitter {
               console.log(
                 `🚪 ${channelId} session revoked by WhatsApp (${streak} consecutive auth rejections over ${Math.round(streakAgeMs / 60_000)}min) — escalating to logged_out`,
               );
+              // Quarantine: kill orphans too, so "parked" really means zero
+              // live sockets (an orphan surviving parking kept the slot busy
+              // and events flowing for 1h on 2026-07-07).
+              this.destroyAllSocketsForChannel(channelId);
               this.reconnectAttempts.delete(channelId);
               this.conflictAlerted.delete(channelId);
+              this.ghostRecoveryAttempts.delete(channelId);
               await this.updateChannelStatus(channelId, 'logged_out');
               await this.updateChannelConfig(channelId, {
                 connectedAt: null,
@@ -1611,8 +1758,9 @@ export class WhatsAppService extends EventEmitter {
           }
         }
         const attempt = this.reconnectAttempts.get(channelId) ?? 0;
-        if (escalatedToTerminal) {
-          // Terminal: no retry scheduled — a human must re-pair (QR/pairing code).
+        if (escalatedToTerminal || escalatedToGhostRecovery) {
+          // Terminal: a human must re-pair. Ghost recovery: its own single
+          // delayed reconnect is already armed — no extra retry here.
         } else if (attempt >= MAX_CONFLICT_RECONNECTS) {
           // Fast attempts exhausted on a PERSISTENT conflict. Creds are still
           // valid → do NOT force a QR re-pair. Hold at a steady cooldown and
@@ -1682,6 +1830,21 @@ export class WhatsAppService extends EventEmitter {
     }
 
     if (connection === 'open') {
+      // Identity guard (mirror of the close handler's): an 'open' from a socket
+      // that already lost the connections-map slot is an orphan winning the
+      // login race. Marking the channel active from it would hide a live
+      // duplicate that 401-conflicts every real reconnect — destroy it instead.
+      // Its open still disproves revocation, so persist connectedAt first.
+      const openSock = this.connections.get(channelId);
+      if (eventSock && openSock && openSock !== eventSock) {
+        await this.updateChannelConfig(channelId, { connectedAt: new Date() });
+        this.destroyOrphanSocket(
+          channelId,
+          eventSock,
+          "'open' won by a replaced socket — live socket untouched",
+        );
+        return;
+      }
       console.log(`✅ ${channelId} connected successfully`);
       await this.updateChannelStatus(channelId, 'active');
       this.connectionStatus.set(channelId, 'active');
@@ -1696,13 +1859,16 @@ export class WhatsAppService extends EventEmitter {
       // WHY: only drop the conflict-attempt budget once the connection has
       // PROVEN stable (stayed open CONFLICT_STABLE_RESET_MS). A flapping
       // conflict (open -> replaced in seconds) must not reset the counter, or
-      // it loops forever without escalating to the steady cooldown. A later
-      // 'close' cancels this timer (see the close handler).
-      // Only arm the stability reset if there's a conflict budget/alert to
-      // clear — healthy channels with no prior conflict don't need a timer.
+      // it loops forever without escalating to the steady cooldown. Same for
+      // the ghost-recovery budget: a recovery whose open flaps back to 401
+      // must not regain rescue cycles, or MAX_GHOST_RECOVERIES never parks a
+      // session revoked right after an open. A later 'close' cancels this
+      // timer (see the close handler). Only arm the stability reset if
+      // there's a budget/alert to clear.
       if (
         this.reconnectAttempts.has(channelId) ||
-        this.conflictAlerted.has(channelId)
+        this.conflictAlerted.has(channelId) ||
+        this.ghostRecoveryAttempts.has(channelId)
       ) {
         const prevStable = this.stableTimers.get(channelId);
         if (prevStable) clearTimeout(prevStable);
@@ -1710,6 +1876,7 @@ export class WhatsAppService extends EventEmitter {
           if (this.stableTimers.get(channelId) !== stable) return; // superseded
           this.reconnectAttempts.delete(channelId);
           this.conflictAlerted.delete(channelId);
+          this.ghostRecoveryAttempts.delete(channelId);
           this.stableTimers.delete(channelId);
         }, CONFLICT_STABLE_RESET_MS);
         stable.unref();
@@ -2963,7 +3130,71 @@ export class WhatsAppService extends EventEmitter {
     this.conflictAlerted.delete(channelId);
 
     if (!target) return;
+    this.unregisterSocket(channelId, target);
     this.destroySocketResources(target);
+  }
+
+  private registerSocket(channelId: string, sock: WASocket): void {
+    const channelSockets =
+      this.liveSockets.get(channelId) ?? new Set<WASocket>();
+    channelSockets.add(sock);
+    this.liveSockets.set(channelId, channelSockets);
+  }
+
+  private unregisterSocket(channelId: string, sock: WASocket): void {
+    const channelSockets = this.liveSockets.get(channelId);
+    if (!channelSockets) return;
+    channelSockets.delete(sock);
+    if (channelSockets.size === 0) this.liveSockets.delete(channelId);
+  }
+
+  /**
+   * Full-stop for a channel: teardownSocket (map entry + timers + mapped
+   * socket) PLUS every registry orphan that lost the map slot. WHY: the only
+   * way to guarantee the WhatsApp device slot is actually free (terminal
+   * parking, manual disconnect, QR refresh, ghost recovery).
+   */
+  private destroyAllSocketsForChannel(channelId: string): void {
+    this.teardownSocket(channelId);
+    const orphanSockets = this.liveSockets.get(channelId);
+    if (orphanSockets && orphanSockets.size > 0) {
+      console.warn(
+        `👻 ${channelId} destroying ${orphanSockets.size} orphan socket(s) outside the map`,
+      );
+      for (const orphanSock of orphanSockets) {
+        this.destroySocketResources(orphanSock);
+      }
+    }
+    this.liveSockets.delete(channelId);
+  }
+
+  /**
+   * Kill a socket that emitted an event without owning the map slot — a live
+   * duplicate that would otherwise hold the WhatsApp device slot and
+   * 401-conflict every reconnect.
+   */
+  private destroyOrphanSocket(
+    channelId: string,
+    sock: WASocket,
+    context: string,
+  ): void {
+    console.warn(`👻 ${channelId} destroying orphan socket (${context})`);
+    this.unregisterSocket(channelId, sock);
+    this.destroySocketResources(sock);
+  }
+
+  /**
+   * True (after destroying the socket) when an event came from a socket that
+   * is not the channel's mapped one. Gate for per-socket event handlers.
+   */
+  private dropIfOrphan(
+    channelId: string,
+    sock: WASocket,
+    context: string,
+  ): boolean {
+    if (this.connections.get(channelId) === sock) return false;
+    this.destroyOrphanSocket(channelId, sock, context);
+    return true;
   }
 
   /**
@@ -3013,17 +3244,20 @@ export class WhatsAppService extends EventEmitter {
         `🔄 Resetting socket connection for channel: ${channelId} (preserving auth state)`,
       );
 
-      const sock = this.connections.get(channelId);
-      if (sock) {
+      // Orphan-only states (registry socket without a map entry, e.g. a
+      // survivor of terminal parking) must be swept too — that stray socket
+      // holds the device slot and would 401-conflict the fresh connect.
+      const hasAnySocket =
+        this.connections.has(channelId) || this.liveSockets.has(channelId);
+      if (hasAnySocket) {
         // Update memory status to indicate reset BEFORE teardown so any
         // in-flight callback observing this state takes the resetting branch.
         this.connectionStatus.set(channelId, 'resetting');
 
-        // T8: removes listeners + closes ws + ends socket + cancels pending
-        // reconnect timer. The previous code only called sock.end() which left
-        // every event listener (and its captured `this`/auth-creds) reachable
-        // → ~6GB heap leak across 1894 reconnects → FATAL OOM.
-        this.teardownSocket(channelId, sock);
+        // T8: removes listeners + closes ws + ends sockets + cancels pending
+        // reconnect timers — INCLUDING registry orphans (a reset that leaves a
+        // duplicate alive re-creates the 401-conflict loop it tries to cure).
+        this.destroyAllSocketsForChannel(channelId);
         console.log(`🔌 Socket fully torn down for channel: ${channelId}`);
 
         // Update database status
@@ -3045,6 +3279,18 @@ export class WhatsAppService extends EventEmitter {
       this.connectionStatus.set(channelId, 'error');
       throw error;
     }
+  }
+
+  /**
+   * True while the engine is already handling a reconnect for this channel
+   * (pending retry timer or connect in flight). The auto-heal cron checks this
+   * so it never races the engine's own reconnect — that exact collision bred
+   * the 2026-07-07 double-socket ghost.
+   */
+  isReconnectPending(channelId: string): boolean {
+    return (
+      this.reconnectTimers.has(channelId) || this.connectInFlight.has(channelId)
+    );
   }
 
   /**
@@ -3074,8 +3320,9 @@ export class WhatsAppService extends EventEmitter {
         }
 
         // T8: even after logout(), the socket's listeners still hold `this` +
-        // auth.creds. Tear them down explicitly so V8 can reclaim the memory.
-        this.teardownSocket(channelId, sock);
+        // auth.creds. Tear everything down (orphans included) so V8 can
+        // reclaim the memory and the device slot is truly free.
+        this.destroyAllSocketsForChannel(channelId);
         this.reconnectAttempts.delete(channelId);
 
         // Clean up memory status
@@ -3087,6 +3334,10 @@ export class WhatsAppService extends EventEmitter {
         console.log(`✅ Channel ${channelId} disconnected successfully`);
       } else {
         console.log(`⚠️ Channel ${channelId} was not connected`);
+        // Kill any orphan socket still holding the device slot (a socket can
+        // survive terminal parking outside the map) so a follow-up /connect
+        // gets a free slot instead of a 401 conflict.
+        this.destroyAllSocketsForChannel(channelId);
         // Still update status in case it was marked as active in DB
         await this.updateChannelStatus(channelId, 'disconnected');
       }
@@ -3192,12 +3443,15 @@ export class WhatsAppService extends EventEmitter {
           console.warn(`⚠️ Error closing socket for ${channelId}:`, error);
         }
       }
+      // Destroy every socket (orphans included) — logout() alone leaves the
+      // listeners (and their `this`/creds closures) retained → heap leak.
+      this.destroyAllSocketsForChannel(channelId);
 
       // Remove from all memory maps
-      this.connections.delete(channelId);
       this.connectionStatus.delete(channelId);
       this.preloadAttempts.delete(channelId);
       this.lastPreloadAttempt.delete(channelId);
+      this.ghostRecoveryAttempts.delete(channelId);
 
       // Clear auth state if it exists
       await this.clearAuthState(channelId);
@@ -3309,8 +3563,11 @@ export class WhatsAppService extends EventEmitter {
         } catch (error) {
           console.warn(`⚠️ Error during logout for ${channelId}:`, error);
         }
-        this.connections.delete(channelId);
       }
+      // Full teardown, UNCONDITIONAL (not gated on the map entry): an orphan
+      // socket outside the map still holds the device slot — exactly what
+      // would conflict the fresh QR pairing.
+      this.destroyAllSocketsForChannel(channelId);
 
       // Step 2: Clear auth state to force fresh QR generation
       console.log(
@@ -3325,9 +3582,9 @@ export class WhatsAppService extends EventEmitter {
       // Step 4: Clear any cached config QR code
       await this.updateChannelConfig(channelId, { qrCode: null });
 
-      // Step 5: Reconnect to generate new QR code
+      // Step 5: Reconnect to generate new QR code (human-initiated pairing flow)
       console.log(`🔄 Starting fresh connection for ${channelId}`);
-      await this.connectChannel(channelId);
+      await this.connectChannel(channelId, undefined, { allowPairing: true });
 
       console.log(`✅ QR refresh initiated for channel: ${channelId}`);
     } catch (error) {

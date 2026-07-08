@@ -11,7 +11,13 @@ export interface ChannelMetric {
   lastEventAt: string | null;
 }
 
-type ConnectionEvent = 'open' | 'close' | 'reconnect' | 'conflict' | 'logged_out';
+type ConnectionEvent =
+  | 'open'
+  | 'close'
+  | 'reconnect'
+  | 'conflict'
+  | 'ghost_recovery'
+  | 'logged_out';
 
 interface RecordExtras {
   statusCode?: number | null;
