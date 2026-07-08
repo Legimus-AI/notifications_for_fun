@@ -148,3 +148,31 @@ export const UNHEALABLE_REASONS = [
   'status_pairing_code_ready',
   'status_generating_qr',
 ];
+
+/**
+ * Ghost-session recovery (self-conflict false-positive guard).
+ *
+ * A 401 "Connection Failure" streak can be caused by OUR OWN orphan socket
+ * holding the device slot (double-connect race) — WhatsApp returns the exact
+ * same 401 as for a revoked session. The separating signal: a session that
+ * managed to OPEN at/after the streak start cannot be revoked. In that case
+ * the engine destroys every socket for the channel, waits
+ * GHOST_RECOVERY_DELAY_MS for WhatsApp to free the slot, and tries ONE clean
+ * connect — instead of parking a healthy session as logged_out.
+ * WHY 90s: WhatsApp frees a dead companion slot well under a minute
+ * (verified 2026-07-07: once the orphan died, the first clean login opened).
+ */
+export const GHOST_RECOVERY_DELAY_MS = 90_000;
+
+/**
+ * Max ghost-recovery cycles per auth-rejection streak. A session revoked
+ * seconds AFTER an open looks identical to a ghost conflict — this cap makes
+ * that case park as revoked after N failed recoveries instead of looping.
+ */
+export const MAX_GHOST_RECOVERIES = 2;
+
+/**
+ * Slack when comparing connectedAt (last successful open) with the streak
+ * start — the poisoning open typically lands the same second the streak begins.
+ */
+export const GHOST_OPEN_SLACK_MS = 60_000;

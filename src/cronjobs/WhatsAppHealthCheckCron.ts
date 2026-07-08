@@ -438,6 +438,18 @@ const attemptAutoHeal = async (
       continue;
     }
 
+    // WHY: the cron tick can land seconds after a disconnect, while the
+    // engine's own reconnect timer/connect is already handling it. Healing
+    // then spawns a SECOND socket with the same device identity — the
+    // 2026-07-07 double-socket race that 401-parked a healthy channel.
+    if (whatsAppService.isReconnectPending(channelId)) {
+      console.log(
+        `⏭️ ${channelId}: skipping auto-heal (engine reconnect already pending/in flight)`,
+      );
+      skipped.push(channel);
+      continue;
+    }
+
     const previousAttempts = healAttempts.get(channelId) ?? 0;
     if (previousAttempts >= MAX_HEAL_ATTEMPTS) {
       console.log(

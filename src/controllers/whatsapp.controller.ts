@@ -99,9 +99,13 @@ class WhatsAppController {
         }
       }
 
-      // Start fresh connection
+      // Start fresh connection. allowPairing: a human-initiated /connect on an
+      // unregistered channel may legitimately need a pairing code; automatic
+      // reconnects (engine-internal) never pass this flag.
       console.log(`🚀 Starting fresh connection for channel ${channelId}`);
-      await whatsAppService.connectChannel(channelId, phoneNumber);
+      await whatsAppService.connectChannel(channelId, phoneNumber, {
+        allowPairing: true,
+      });
 
       res.status(200).json({
         ok: true,
@@ -418,8 +422,10 @@ class WhatsAppController {
         );
       }
 
-      // Connect with pairing code
-      await whatsAppService.connectChannel(channelId, phoneNumber);
+      // Connect with pairing code (explicit human pairing flow)
+      await whatsAppService.connectChannel(channelId, phoneNumber, {
+        allowPairing: true,
+      });
 
       res.status(200).json({
         ok: true,
