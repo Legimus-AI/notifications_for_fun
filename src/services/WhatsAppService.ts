@@ -35,6 +35,9 @@ import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
 import {
+  hasExplicitWhatsAppSessionRevocation,
+} from '../helpers/whatsappDisconnect';
+import {
   MAX_CONFLICT_RECONNECTS,
   CONFLICT_BACKOFF_MS,
   CONFLICT_COOLDOWN_MS,
@@ -1570,14 +1573,18 @@ export class WhatsAppService extends EventEmitter {
       // left a ghost slot) — creds are still valid, retry with backoff. Only
       // device_removed / forbidden / badSession / a plain 401 are truly
       // terminal (need QR re-pair).
-      const msg = (disconnectMessage || '').toLowerCase();
+      const normalizedDisconnectMessage = (
+        disconnectMessage || ''
+      ).toLowerCase();
       const isConflict =
         disconnectStatusCode === DisconnectReason.connectionReplaced ||
         (disconnectStatusCode === DisconnectReason.loggedOut &&
-          /(conflict|replaced|connection failure)/.test(msg) &&
-          !/device_removed/.test(msg));
+          /(conflict|replaced|connection failure)/.test(
+            normalizedDisconnectMessage,
+          ) &&
+          !/device_removed/.test(normalizedDisconnectMessage));
       const isTerminal =
-        /device_removed/.test(msg) ||
+        /device_removed/.test(normalizedDisconnectMessage) ||
         disconnectStatusCode === 403 ||
         disconnectStatusCode === DisconnectReason.badSession ||
         (disconnectStatusCode === DisconnectReason.loggedOut && !isConflict);
@@ -1623,12 +1630,10 @@ export class WhatsAppService extends EventEmitter {
         });
         await fireTerminalDisconnectedWebhook();
       } else if (isConflict) {
-        // Revocation detector: a session revoked by WhatsApp presents EXACTLY
-        // like a recoverable ghost conflict (401 + "Connection Failure") — the
-        // only reliable difference is that it rejects EVERY fresh socket,
-        // forever. Track the streak in the DB so it survives process restarts
-        // and manual /connect calls. 440 connectionReplaced is excluded: a
-        // real competing device self-heals when it closes.
+        // Never infer revocation from a bare 401 "Connection Failure": both
+        // production channels have reopened with the same credentials after
+        // that response. Only explicit provider revocation markers may enter
+        // the persistent streak; 440 connectionReplaced remains recoverable.
         // Transport-aware escalation: during a detected host-uplink outage a
         // 401 "Connection Failure" is the network recovering (mass re-handshake
         // after the blip), NOT a revoked session — do NOT count it toward the
@@ -1638,11 +1643,11 @@ export class WhatsAppService extends EventEmitter {
         const isAuthRejection =
           !hostNetworkEvent &&
           disconnectStatusCode === DisconnectReason.loggedOut &&
-          /connection failure/.test(msg);
+          hasExplicitWhatsAppSessionRevocation(normalizedDisconnectMessage);
         if (
           hostNetworkEvent &&
           disconnectStatusCode === DisconnectReason.loggedOut &&
-          /connection failure/.test(msg)
+          /connection failure/.test(normalizedDisconnectMessage)
         ) {
           console.warn(
             `🌐 ${channelId} 401 "Connection Failure" during host-network grace — treating as recoverable, no terminal escalation.`,
@@ -1798,13 +1803,13 @@ export class WhatsAppService extends EventEmitter {
             status: 'connecting',
           });
           await this.updateChannelStatus(channelId, 'connecting');
-          const t = setTimeout(() => {
+          const reconnectTimer = setTimeout(() => {
             this.reconnectTimers.delete(channelId);
             if (this.isShuttingDown) return; // don't spawn a socket mid-shutdown
             this.connectChannel(channelId, phoneNumber);
           }, delay);
-          t.unref(); // don't keep the process alive on shutdown
-          this.reconnectTimers.set(channelId, t);
+          reconnectTimer.unref(); // don't keep the process alive on shutdown
+          this.reconnectTimers.set(channelId, reconnectTimer);
         }
       } else {
         // Transitory (428/408/503/515/network blip): reconnect fast.

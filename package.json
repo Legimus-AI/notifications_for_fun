@@ -7,6 +7,7 @@
     "mocha": "nyc mocha --timeout=5000 --exit",
     "test": "npm run coverage:clean && npm run test:unit && npm run test:e2e && npm run coverage",
     "test:unit": "cross-env NODE_ENV=test jest --coverage",
+    "test:disconnect-classification": "ts-node src/tests/whatsappDisconnect.regression.ts",
     "test:e2e": "cross-env NODE_ENV=test npm run fresh && npm run mocha",
     "dev": "cross-env NODE_ENV=development ts-node-dev --respawn --pretty --transpile-only -r tsconfig-paths/register ./src/index.ts",
     "tsc": "npx tsc",
