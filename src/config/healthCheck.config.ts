@@ -77,13 +77,11 @@ export const CONFLICT_STABLE_RESET_MS = 60_000;
 export const TRANSITORY_RECONNECT_DELAY_MS = 3_000;
 
 /**
- * Consecutive 401 auth-rejections (loggedOut + "Connection Failure" on a
- * FRESH socket) after which the session is considered revoked by WhatsApp —
- * i.e. no QR-less revival is possible. WHY: a ghost/zombie slot heals within
- * 1-2 fresh teardown+connect attempts, but a revoked session rejects EVERY
- * fresh login forever (empirical: channels db634c7d and 5af90a60, 2026-06).
- * 440 connectionReplaced does NOT count toward this streak — that is a real
- * competing device and self-heals when it closes.
+ * Consecutive explicit auth-rejections after which the session is considered
+ * revoked by WhatsApp. Generic 401 "Connection Failure" is ambiguous and must
+ * remain recoverable: production channels have reopened with the same auth
+ * after this exact response. Only provider messages that explicitly name a
+ * removed/revoked session contribute to the streak.
  */
 export const TERMINAL_AUTH_REJECTION_COUNT = 8;
 
