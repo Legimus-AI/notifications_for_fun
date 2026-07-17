@@ -18,7 +18,7 @@ Monitors only channels with `isActive: true` and `type: 'whatsapp_automated'`.
 
 Per channel, three levels (in `isConnectionAlive`):
 
-1. **Connection exists** — socket present in WhatsAppService. If missing, DB status distinguishes `status_logged_out` (terminal, human action) from `no_connection` (healable).
+1. **Connection exists** — socket present in WhatsAppService. If missing, DB status distinguishes `status_logged_out` (terminal), `status_auth_retry_paused` (non-terminal manual retry after cooldown), and `no_connection` (healable).
 2. **Status check** — in-memory status must be `active`.
 3. **Phone registration** — Baileys `onWhatsApp()` verifies the number is still registered (`phone_not_registered` = banned/deactivated). A failed *check* (network blip) logs a warning but does NOT mark the channel dead.
 
@@ -43,6 +43,7 @@ After healing it waits `HEAL_RECHECK_DELAY_MS` (10s) and re-checks; only channel
 
 - Engine handles reactive reconnects itself (transitory retry, conflict backoff, steady cooldown, ghost recovery). The cron NEVER competes with those paths (`isReconnectPending` guard).
 - Revoked sessions park as `logged_out` and are skipped by auto-heal ("requires human action") — recovery is a human re-pair (pairing code first, QR fallback).
+- An ambiguous `401 Connection Failure` that leaves Baileys auth at `registered=false` parks as `auth_retry_paused` on the first rejection. This preserves the linked-device auth, emits no terminal-disconnect webhook, and blocks both engine retries and cron auto-heal. Retry manually only after the WhatsApp account cooldown; repeated pairing attempts can extend the provider block.
 - **Ghost recovery** (engine-side, not cron): a 401 streak on a channel that OPENED during the streak is a self-conflict, not a revocation — the engine full-stops every socket and does one clean reconnect after `GHOST_RECOVERY_DELAY_MS` (90s), max `MAX_GHOST_RECOVERIES` (2) per streak. During that window the channel reads `status_connecting` → cron leaves it alone.
 
 ## Schedule
@@ -61,7 +62,7 @@ const { healthy, unhealthy } = await manualHealthCheck();
 - `🏥` tick start · `✅/❌` per-channel verdict · `🔧` heal attempt N/3
 - `⏭️` skipped (max alerts, unhealable reason, or engine reconnect pending)
 - `📊` alert counter · `📤` alert dispatch · `🚨` mass outage
-- Engine-side (not cron): `👻` orphan destruction / ghost recovery · `🚪` terminal parking
+- Engine-side (not cron): `👻` orphan destruction / ghost recovery · `⏸️` non-terminal auth pause · `🚪` terminal parking
 
 ## Troubleshooting
 

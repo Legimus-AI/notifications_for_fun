@@ -127,6 +127,7 @@ export const NETWORK_OUTAGE_GRACE_MS = 10 * 60_000;
  *   1. Terminal — needs human action (notify):
  *      - phone_not_registered: number deactivated on WhatsApp
  *      - status_logged_out: linked-device session invalidated, needs QR re-pair
+ *      - status_auth_retry_paused: ambiguous auth rejection, manual retry only
  *   2. In-progress — already being handled by another flow (silent skip):
  *      - status_connecting / status_resetting: another connect is in flight
  *      - status_qr_ready / status_pairing_code_ready / status_generating_qr:
@@ -140,6 +141,7 @@ export const NETWORK_OUTAGE_GRACE_MS = 10 * 60_000;
 export const UNHEALABLE_REASONS = [
   'phone_not_registered',
   'status_logged_out',
+  'status_auth_retry_paused',
   'status_connecting',
   'status_resetting',
   'status_qr_ready',

@@ -17,7 +17,8 @@ type ConnectionEvent =
   | 'reconnect'
   | 'conflict'
   | 'ghost_recovery'
-  | 'logged_out';
+  | 'logged_out'
+  | 'auth_retry_paused';
 
 interface RecordExtras {
   statusCode?: number | null;
@@ -77,7 +78,12 @@ class ChannelMetricsService {
     if (event === 'open') {
       m.status = extras.status ?? 'active';
       m.connectedSince = now.toISOString();
-    } else if (event === 'close' || event === 'conflict' || event === 'logged_out') {
+    } else if (
+      event === 'close' ||
+      event === 'conflict' ||
+      event === 'logged_out' ||
+      event === 'auth_retry_paused'
+    ) {
       m.lastDisconnectAt = now.toISOString();
       m.connectedSince = null;
     }
