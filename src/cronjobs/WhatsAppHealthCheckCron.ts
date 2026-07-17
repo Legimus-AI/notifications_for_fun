@@ -3,6 +3,10 @@ import { whatsAppService } from '../services/WhatsAppService';
 import { sendAlertToAllRecipients } from '../services/alertDelivery';
 import Channel from '../models/Channels';
 import {
+  AUTH_RETRY_PAUSED_STATUS,
+  getMissingWhatsAppConnectionReason,
+} from '../helpers/whatsappDisconnect';
+import {
   MAX_CONSECUTIVE_ALERTS,
   MASS_UNHEALTHY_ALERT_THRESHOLD,
   HEALTH_CHECK_SCHEDULE,
@@ -47,14 +51,21 @@ const isConnectionAlive = async (
     // Check 1: Does connection exist in service?
     const activeConnections = whatsAppService.getActiveConnections();
     if (!activeConnections.includes(channelId)) {
+      const memoryStatus = whatsAppService.getChannelStatus(channelId);
+      if (memoryStatus === AUTH_RETRY_PAUSED_STATUS) {
+        return {
+          alive: false,
+          reason: `status_${AUTH_RETRY_PAUSED_STATUS}`,
+        };
+      }
       // Distinguish a recoverable drop from an irreversible logout.
       // On 'loggedOut' the close handler deletes the socket BEFORE we get here,
       // so the in-memory status map is stale — DB is the source of truth.
       const dbStatus = await whatsAppService.getChannelStatusFromDB(channelId);
-      if (dbStatus === 'logged_out') {
-        return { alive: false, reason: 'status_logged_out' };
-      }
-      return { alive: false, reason: 'no_connection' };
+      return {
+        alive: false,
+        reason: getMissingWhatsAppConnectionReason(dbStatus),
+      };
     }
 
     // Check 2: What's the status in service?
