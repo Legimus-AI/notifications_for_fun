@@ -3,12 +3,12 @@ import mongoosePaginate from 'mongoose-paginate-v2';
 
 /**
  * Durable audit trail of WhatsApp channel connection-state transitions.
- * One row per open/close/reconnect/logged_out/conflict event. Survives process
- * restarts so incidents are diagnosable without grepping multi-GB pm2 logs.
+ * One row per connection-state event, including terminal logout and auth pause.
+ * Survives restarts so incidents are diagnosable without multi-GB PM2 logs.
  */
 export interface IChannelConnectionEvent extends Document {
   channelId: string;
-  event: string; // open | close | reconnect | conflict | logged_out
+  event: string;
   statusCode?: number;
   reason?: string;
   message?: string;

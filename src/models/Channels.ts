@@ -175,6 +175,7 @@ const ChannelSchema = new Schema(
         'qr_ready',
         'pairing_code_ready',
         'logged_out',
+        'auth_retry_paused',
         // General statuses
         'ready',
         'failed',

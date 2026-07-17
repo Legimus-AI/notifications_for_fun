@@ -31,7 +31,10 @@ import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
 import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
 import {
+  AUTH_RETRY_PAUSED_STATUS,
+  getWhatsAppCredentialsRegisteredAfterPause,
   hasExplicitWhatsAppSessionRevocation,
+  shouldPauseAmbiguousWhatsAppAuthRetry,
 } from '../helpers/whatsappDisconnect';
 import {
   MAX_CONFLICT_RECONNECTS,
@@ -242,6 +245,11 @@ export interface WhatsAppServiceEvents {
   message: (channelId: string, payload: any) => void;
   'message-status': (channelId: string, status: any) => void;
   call: (channelId: string, payload: any) => void;
+}
+
+interface CredentialPersistenceState {
+  wasRegisteredAtSocketStart: boolean;
+  pendingUnregisteredCredentials?: AuthenticationCreds;
 }
 
 export class WhatsAppService extends EventEmitter {
@@ -594,6 +602,14 @@ export class WhatsAppService extends EventEmitter {
       return;
     }
 
+    await this.persistCreds(channelId, creds);
+  }
+
+  /** Persists credentials after a socket close has removed the live map entry. */
+  private async persistCreds(
+    channelId: string,
+    creds: AuthenticationCreds,
+  ): Promise<void> {
     await WhatsAppAuthState.findOneAndUpdate(
       { channelId },
       { creds },
@@ -681,6 +697,9 @@ export class WhatsAppService extends EventEmitter {
 
       // Create auth state
       const auth = await this.createMongoAuthState(channelId);
+      const credentialPersistenceState: CredentialPersistenceState = {
+        wasRegisteredAtSocketStart: auth.creds.registered,
+      };
 
       // Fetch the latest WhatsApp Web version
       const { version, isLatest } = await fetchLatestWaWebVersion({});
@@ -773,6 +792,7 @@ export class WhatsAppService extends EventEmitter {
           phoneNumber,
           sock,
           options.allowPairing === true,
+          credentialPersistenceState,
         );
       });
 
@@ -781,6 +801,18 @@ export class WhatsAppService extends EventEmitter {
         // WHY: creds from a socket that lost the map slot must not clobber
         // the valid creds in Mongo — and the emitter is a live duplicate.
         if (this.dropIfOrphan(channelId, sock, 'creds.update')) return;
+        // Defer a registered true→false downgrade until close classifies it.
+        // A generic 401 preserves the linked-device auth; an explicit
+        // revocation persists false so the next human connect can re-pair.
+        if (
+          credentialPersistenceState.wasRegisteredAtSocketStart &&
+          !auth.creds.registered
+        ) {
+          credentialPersistenceState.pendingUnregisteredCredentials = {
+            ...auth.creds,
+          };
+          return;
+        }
         await this.saveCreds(channelId, auth.creds);
       });
 
@@ -928,6 +960,7 @@ export class WhatsAppService extends EventEmitter {
     phoneNumber?: string,
     eventSock?: WASocket,
     allowPairing = false,
+    credentialPersistenceState?: CredentialPersistenceState,
   ) {
     // Check if channel still exists or is being disconnected before processing events
     const currentStatus = this.connectionStatus.get(channelId);
@@ -1063,6 +1096,51 @@ export class WhatsAppService extends EventEmitter {
       const normalizedDisconnectMessage = (
         disconnectMessage || ''
       ).toLowerCase();
+      const shouldPauseAuthRetry = shouldPauseAmbiguousWhatsAppAuthRetry(
+        disconnectStatusCode === DisconnectReason.loggedOut,
+        disconnectMessage,
+        eventSock?.authState.creds.registered,
+      );
+
+      if (shouldPauseAuthRetry) {
+        console.warn(
+          `⏸️ ${channelId} ambiguous 401 changed auth registered=${String(
+            credentialPersistenceState?.wasRegisteredAtSocketStart,
+          )}→false — pausing retries without revoking credentials.`,
+        );
+        this.destroyAllSocketsForChannel(channelId);
+        this.reconnectAttempts.delete(channelId);
+        this.conflictAlerted.delete(channelId);
+        this.ghostRecoveryAttempts.delete(channelId);
+        await this.updateChannelStatus(channelId, AUTH_RETRY_PAUSED_STATUS, {
+          requirePersistence: true,
+        });
+        const credentialsAfterRejectedHandshake =
+          credentialPersistenceState?.pendingUnregisteredCredentials ??
+          eventSock?.authState.creds;
+        if (credentialsAfterRejectedHandshake) {
+          await this.persistCreds(channelId, {
+            ...credentialsAfterRejectedHandshake,
+            registered: getWhatsAppCredentialsRegisteredAfterPause(
+              credentialPersistenceState?.wasRegisteredAtSocketStart,
+            ),
+          });
+        }
+        channelMetrics.record(channelId, 'auth_retry_paused', {
+          statusCode: disconnectStatusCode ?? null,
+          reason: disconnectReasonName,
+          message: disconnectMessage,
+          status: AUTH_RETRY_PAUSED_STATUS,
+        });
+        this.emit(
+          'connection-update',
+          channelId,
+          AUTH_RETRY_PAUSED_STATUS,
+          lastDisconnect,
+        );
+        return;
+      }
+
       const isConflict =
         disconnectStatusCode === DisconnectReason.connectionReplaced ||
         (disconnectStatusCode === DisconnectReason.loggedOut &&
@@ -1106,6 +1184,12 @@ export class WhatsAppService extends EventEmitter {
         this.conflictAlerted.delete(channelId);
         this.ghostRecoveryAttempts.delete(channelId);
         await this.updateChannelStatus(channelId, 'logged_out');
+        const terminalCredentials =
+          credentialPersistenceState?.pendingUnregisteredCredentials ??
+          eventSock?.authState.creds;
+        if (terminalCredentials && !terminalCredentials.registered) {
+          await this.persistCreds(channelId, terminalCredentials);
+        }
         // WHY: connectedAt drives the "Connected since" UI marker; leaving it
         // set makes a logged-out channel look connected. Clear it on logout.
         await this.updateChannelConfig(channelId, { connectedAt: null });
@@ -2973,6 +3057,7 @@ export class WhatsAppService extends EventEmitter {
   private async updateChannelStatus(
     channelId: string,
     status: string,
+    options: { requirePersistence?: boolean } = {},
   ): Promise<void> {
     // WHY: connectionStatus is the in-memory cache read by getChannelStatus(). It
     // MUST move in lockstep with the persisted status — otherwise a socket that dies
@@ -2996,12 +3081,21 @@ export class WhatsAppService extends EventEmitter {
           update['config.disconnectedSince'] = new Date();
         }
       }
-      await Channel.findOneAndUpdate({ channelId }, update);
+      const updatedChannel = await Channel.findOneAndUpdate(
+        { channelId },
+        update,
+      );
+      if (options.requirePersistence && !updatedChannel) {
+        throw new Error(
+          `Channel ${channelId} not found while persisting ${status}`,
+        );
+      }
     } catch (error) {
       console.error(
         `❌ Error updating channel status for ${channelId}:`,
         error,
       );
+      if (options.requirePersistence) throw error;
     }
   }
 
