@@ -12,6 +12,10 @@ import makeWASocket, {
   GroupMetadata,
   makeCacheableSignalKeyStore,
   fetchLatestWaWebVersion,
+  prepareWAMessageMedia,
+  generateWAMessageFromContent,
+  normalizeMessageContent,
+  isJidGroup,
   BinaryNode,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
@@ -109,12 +113,181 @@ function buildVCard(contact: any): string {
 }
 
 /**
- * Build a Baileys interactive message (buttons or list) from Cloud API shape.
+ * Wrap an InteractiveMessage in the envelope current WhatsApp clients render.
  */
-function buildInteractiveContent(interactive: any): any {
-  if (!interactive?.action) {
-    throw new Error('"interactive.action" is required');
+function wrapInteractiveMessage(interactiveMessage: proto.Message.IInteractiveMessage): any {
+  return {
+    viewOnceMessage: {
+      message: {
+        messageContextInfo: {
+          deviceListMetadata: {},
+          deviceListMetadataVersion: 2,
+        },
+        interactiveMessage,
+      },
+    },
+  };
+}
+
+/**
+ * Build relay metadata required for native-flow buttons to render.
+ */
+function buildNativeFlowRelayNodes(
+  messageContent: proto.IMessage,
+  jid: string,
+): any[] {
+  const normalizedMessageContent = normalizeMessageContent(messageContent);
+  const nativeFlowMessage =
+    normalizedMessageContent?.interactiveMessage?.nativeFlowMessage;
+  if (!nativeFlowMessage) {
+    return [];
   }
+
+  const firstButtonName = nativeFlowMessage.buttons?.[0]?.name;
+  const nativeFlowName =
+    firstButtonName &&
+    [
+      'mpm',
+      'cta_catalog',
+      'send_location',
+      'call_permission_request',
+      'flow_message',
+      'wa_payment_transaction_details',
+      'automated_greeting_message_view_catalog',
+    ].includes(firstButtonName)
+      ? firstButtonName
+      : 'mixed';
+  const nativeFlowVersion = nativeFlowName === 'mixed' ? '9' : '2';
+
+  const additionalNodes: any[] = [
+    {
+      tag: 'biz',
+      attrs: {},
+      content: [
+        {
+          tag: 'interactive',
+          attrs: {
+            type: 'native_flow',
+            v: '1',
+          },
+          content: [
+            {
+              tag: 'native_flow',
+              attrs: {
+                v: nativeFlowVersion,
+                name: nativeFlowName,
+              },
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  if (!isJidGroup(jid)) {
+    additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
+  }
+
+  return additionalNodes;
+}
+
+/**
+ * Convert Cloud-API-style button payloads into WhatsApp native-flow buttons.
+ */
+function buildNativeFlowButton(
+  button: any,
+  index: number,
+  fallbackPrefix: string,
+): proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton {
+  const explicitButtonParams =
+    button?.buttonParamsJson ??
+    button?.button_params_json ??
+    button?.button_params ??
+    button?.params;
+
+  if (button?.name && explicitButtonParams) {
+    return {
+      name: button.name,
+      buttonParamsJson:
+        typeof explicitButtonParams === 'string'
+          ? explicitButtonParams
+          : JSON.stringify(explicitButtonParams),
+    };
+  }
+
+  const quickReply = button?.quick_reply ?? button?.reply;
+  if (button?.type === 'reply' || button?.type === 'quick_reply' || quickReply) {
+    return {
+      name: 'quick_reply',
+      buttonParamsJson: JSON.stringify({
+        display_text: quickReply?.title ?? button?.title ?? `Option ${index + 1}`,
+        id: quickReply?.id ?? button?.id ?? `${fallbackPrefix}_${index}`,
+      }),
+    };
+  }
+
+  const urlPayload = button?.url ?? button?.cta_url;
+  if (button?.type === 'cta_url' || urlPayload) {
+    const url = typeof urlPayload === 'string' ? urlPayload : urlPayload?.url;
+    if (!url) {
+      throw new Error(`"buttons[${index}].url" is required for cta_url`);
+    }
+    return {
+      name: 'cta_url',
+      buttonParamsJson: JSON.stringify({
+        display_text:
+          urlPayload?.display_text ?? button?.title ?? button?.display_text ?? 'Abrir',
+        url,
+        merchant_url: url,
+      }),
+    };
+  }
+
+  const copyPayload = button?.copy_code ?? button?.copy;
+  if (button?.type === 'copy_code' || copyPayload) {
+    const copyCode =
+      typeof copyPayload === 'string'
+        ? copyPayload
+        : copyPayload?.copy_code ?? copyPayload?.code;
+    if (!copyCode) {
+      throw new Error(`"buttons[${index}].copy_code" is required for copy_code`);
+    }
+    return {
+      name: 'cta_copy',
+      buttonParamsJson: JSON.stringify({
+        display_text:
+          copyPayload?.display_text ?? button?.title ?? button?.display_text ?? 'Copiar',
+        copy_code: copyCode,
+      }),
+    };
+  }
+
+  const callPayload = button?.phone_number ?? button?.call ?? button?.cta_call;
+  if (button?.type === 'cta_call' || callPayload) {
+    const phoneNumber =
+      typeof callPayload === 'string'
+        ? callPayload
+        : callPayload?.phone_number ?? callPayload?.phone;
+    if (!phoneNumber) {
+      throw new Error(`"buttons[${index}].phone_number" is required for cta_call`);
+    }
+    return {
+      name: 'cta_call',
+      buttonParamsJson: JSON.stringify({
+        display_text:
+          callPayload?.display_text ?? button?.title ?? button?.display_text ?? 'Llamar',
+        phone_number: phoneNumber,
+      }),
+    };
+  }
+
+  throw new Error(`Unsupported native button at index ${index}`);
+}
+
+/**
+ * Build current native-flow interactives for buttons, lists, and custom buttons.
+ */
+function buildNativeInteractiveContent(interactive: any): any {
   const headerText = interactive?.header?.text;
   const bodyText = interactive?.body?.text;
   const footerText = interactive?.footer?.text;
@@ -122,41 +295,270 @@ function buildInteractiveContent(interactive: any): any {
     throw new Error('"interactive.body.text" is required');
   }
 
-  if (interactive.type === 'button' && Array.isArray(interactive.action.buttons)) {
-    const buttons = interactive.action.buttons.map((btn: any, index: number) => ({
-      buttonId: btn.reply?.id ?? `btn_${index}`,
-      buttonText: { displayText: btn.reply?.title ?? `Button ${index + 1}` },
-      type: 1,
-    }));
-    return {
-      text: bodyText,
-      footer: footerText,
-      buttons,
-      headerType: 1,
-      ...(headerText ? { caption: headerText } : {}),
-    };
+  let nativeButtons: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton[];
+  if (interactive.type === 'button' || interactive.type === 'native_flow') {
+    const actionButtons = interactive?.action?.buttons;
+    if (!Array.isArray(actionButtons) || actionButtons.length === 0) {
+      throw new Error('"interactive.action.buttons" is required');
+    }
+    nativeButtons = actionButtons.map((button: any, index: number) =>
+      buildNativeFlowButton(button, index, `${interactive.type}_button`),
+    );
+  } else if (interactive.type === 'flow') {
+    const flowParameters = interactive?.action?.parameters;
+    if (!flowParameters) {
+      throw new Error('"interactive.action.parameters" is required for flow');
+    }
+    nativeButtons = [
+      {
+        name: 'flow_message',
+        buttonParamsJson: JSON.stringify({
+          flow_message_version:
+            flowParameters.flow_message_version ??
+            flowParameters.flowMessageVersion ??
+            '3',
+          flow_token: flowParameters.flow_token ?? flowParameters.flowToken,
+          flow_id: flowParameters.flow_id ?? flowParameters.flowId,
+          flow_name: flowParameters.flow_name ?? flowParameters.flowName,
+          flow_cta: flowParameters.flow_cta ?? flowParameters.flowCta ?? 'Abrir',
+          flow_action:
+            flowParameters.flow_action ?? flowParameters.flowAction ?? 'navigate',
+          flow_action_payload:
+            flowParameters.flow_action_payload ??
+            flowParameters.flowActionPayload ?? {
+              screen: flowParameters.navigate_screen ?? flowParameters.screen,
+            },
+          mode: flowParameters.mode ?? 'published',
+        }),
+      },
+    ];
+  } else if (interactive.type === 'list') {
+    const sections = interactive?.action?.sections;
+    if (!Array.isArray(sections) || sections.length === 0) {
+      throw new Error('"interactive.action.sections" is required');
+    }
+    nativeButtons = [
+      {
+        name: 'single_select',
+        buttonParamsJson: JSON.stringify({
+          title: interactive.action.button ?? 'Abrir lista',
+          sections: sections.map((section: any) => ({
+            title: section.title,
+            rows: (section.rows ?? []).map((row: any) => ({
+              header: row.header,
+              title: row.title,
+              description: row.description,
+              id: row.id,
+            })),
+          })),
+        }),
+      },
+    ];
+  } else {
+    throw new Error(
+      `Unsupported native interactive type "${interactive.type}"`,
+    );
   }
 
-  if (interactive.type === 'list' && Array.isArray(interactive.action.sections)) {
-    const sections = interactive.action.sections.map((section: any) => ({
-      title: section.title,
-      rows: (section.rows ?? []).map((row: any) => ({
-        title: row.title,
-        rowId: row.id,
-        description: row.description,
-      })),
-    }));
-    return {
-      text: bodyText,
-      footer: footerText,
-      title: headerText,
-      buttonText: interactive.action.button ?? 'Select',
-      sections,
-    };
+  const interactiveMessage = proto.Message.InteractiveMessage.create({
+    header: headerText
+      ? proto.Message.InteractiveMessage.Header.create({
+          title: headerText,
+        })
+      : undefined,
+    body: proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
+    footer: footerText
+      ? proto.Message.InteractiveMessage.Footer.create({ text: footerText })
+      : undefined,
+    nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+      buttons: nativeButtons,
+      messageVersion: 1,
+    }),
+  });
+
+  return { interactiveMessage };
+}
+
+/**
+ * Build a WhatsApp product card using Baileys' product helper shape.
+ */
+function buildProductContent(productPayload: any, businessOwnerJid: string): any {
+  const imagePayload = productPayload?.image;
+  if (!imagePayload?.link && !imagePayload?.data) {
+    throw new Error('"product.image.link" or "data" is required');
+  }
+  if (!productPayload?.title) {
+    throw new Error('"product.title" is required');
   }
 
-  throw new Error(
-    `Unsupported interactive type "${interactive.type}". Use "button" or "list".`,
+  return {
+    product: {
+      productImage: resolveMediaSource(imagePayload, 'product.image'),
+      productId: productPayload.product_id ?? productPayload.productId,
+      title: productPayload.title,
+      description: productPayload.description,
+      currencyCode: productPayload.currency_code ?? productPayload.currencyCode ?? 'PEN',
+      priceAmount1000:
+        productPayload.price_amount_1000 ?? productPayload.priceAmount1000 ?? 0,
+      retailerId:
+        productPayload.retailer_id ??
+        productPayload.product_retailer_id ??
+        productPayload.retailerId,
+      url: productPayload.url,
+      productImageCount: productPayload.product_image_count ?? 1,
+    },
+    businessOwnerJid,
+    body: productPayload.body,
+    footer: productPayload.footer,
+  };
+}
+
+/**
+ * Build a raw ProductMessage catalog card.
+ */
+async function buildCatalogCardContent(
+  catalogPayload: any,
+  sock: WASocket,
+  businessOwnerJid: string,
+): Promise<any> {
+  const imagePayload = catalogPayload?.image;
+  if (!imagePayload?.link && !imagePayload?.data) {
+    throw new Error('"catalog_card.image.link" or "data" is required');
+  }
+  const mediaSource = resolveMediaSource(imagePayload, 'catalog_card.image');
+  const preparedMedia = await prepareWAMessageMedia(
+    { image: mediaSource },
+    { upload: sock.waUploadToServer },
+  );
+
+  return {
+    productMessage: proto.Message.ProductMessage.create({
+      businessOwnerJid,
+      body: catalogPayload.body,
+      footer: catalogPayload.footer,
+      catalog: proto.Message.ProductMessage.CatalogSnapshot.create({
+        catalogImage: preparedMedia.imageMessage,
+        title: catalogPayload.title ?? 'Catalogo',
+        description: catalogPayload.description,
+      }),
+    }),
+  };
+}
+
+/**
+ * Build a raw OrderMessage to test cart/order rendering.
+ */
+function buildOrderContent(orderPayload: any, sellerJid: string): any {
+  return {
+    orderMessage: proto.Message.OrderMessage.create({
+      orderId: orderPayload.order_id ?? orderPayload.orderId ?? `order_${Date.now()}`,
+      itemCount: Number(orderPayload.item_count ?? orderPayload.itemCount ?? 1),
+      status:
+        proto.Message.OrderMessage.OrderStatus[
+          orderPayload.status as keyof typeof proto.Message.OrderMessage.OrderStatus
+        ] ?? proto.Message.OrderMessage.OrderStatus.INQUIRY,
+      surface:
+        proto.Message.OrderMessage.OrderSurface[
+          orderPayload.surface as keyof typeof proto.Message.OrderMessage.OrderSurface
+        ] ?? proto.Message.OrderMessage.OrderSurface.CATALOG,
+      message: orderPayload.message,
+      orderTitle: orderPayload.order_title ?? orderPayload.orderTitle ?? 'Carrito demo',
+      sellerJid,
+      token: orderPayload.token ?? `cart_${Date.now()}`,
+      totalAmount1000:
+        orderPayload.total_amount_1000 ?? orderPayload.totalAmount1000 ?? 0,
+      totalCurrencyCode:
+        orderPayload.total_currency_code ?? orderPayload.totalCurrencyCode ?? 'PEN',
+      messageVersion: orderPayload.message_version ?? 1,
+      catalogType: orderPayload.catalog_type ?? 'CATALOG',
+    }),
+  };
+}
+
+/**
+ * Build a Baileys native carousel from Cloud-API-style interactive cards.
+ */
+async function buildCarouselInteractiveContent(
+  interactive: any,
+  sock: WASocket,
+): Promise<any> {
+  const bodyText = interactive?.body?.text;
+  const footerText = interactive?.footer?.text;
+  const cards = interactive?.action?.cards;
+  if (!bodyText) {
+    throw new Error('"interactive.body.text" is required');
+  }
+  if (!Array.isArray(cards) || cards.length === 0) {
+    throw new Error('"interactive.action.cards" is required for carousel');
+  }
+
+  const carouselCards = await Promise.all(
+    cards.map(async (card: any, index: number) => {
+      const imagePayload = card?.header?.image;
+      if (!imagePayload?.link && !imagePayload?.data) {
+        throw new Error(
+          `"interactive.action.cards[${index}].header.image.link" or "data" is required for carousel`,
+        );
+      }
+
+      const mediaSource = resolveMediaSource(
+        imagePayload,
+        `interactive.action.cards[${index}].header.image`,
+      );
+      const preparedMedia = await prepareWAMessageMedia(
+        { image: mediaSource },
+        { upload: sock.waUploadToServer },
+      );
+      const actionButtons = card?.action?.buttons ?? [];
+      const nativeButtons = actionButtons.length > 0
+        ? actionButtons.map((button: any, buttonIndex: number) =>
+            buildNativeFlowButton(button, buttonIndex, `card_${index}_button`),
+          )
+        : [
+            {
+              name: 'quick_reply',
+              buttonParamsJson: JSON.stringify({
+                display_text: 'Ver producto',
+                id: `card_${index}_view_product`,
+              }),
+            },
+          ];
+
+      return proto.Message.InteractiveMessage.create({
+        header: proto.Message.InteractiveMessage.Header.create({
+          hasMediaAttachment: true,
+          imageMessage: preparedMedia.imageMessage,
+        }),
+        body: proto.Message.InteractiveMessage.Body.create({
+          text: card?.body?.text ?? `Producto ${index + 1}`,
+        }),
+        footer: card?.footer?.text
+          ? proto.Message.InteractiveMessage.Footer.create({
+              text: card.footer.text,
+            })
+          : undefined,
+        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+          buttons: nativeButtons,
+          messageVersion: 1,
+        }),
+      });
+    }),
+  );
+
+  return wrapInteractiveMessage(
+    proto.Message.InteractiveMessage.create({
+      body: proto.Message.InteractiveMessage.Body.create({ text: bodyText }),
+      footer: footerText
+        ? proto.Message.InteractiveMessage.Footer.create({ text: footerText })
+        : undefined,
+      carouselMessage: proto.Message.InteractiveMessage.CarouselMessage.create({
+        cards: carouselCards,
+        messageVersion: 1,
+        carouselCardType:
+          proto.Message.InteractiveMessage.CarouselMessage.CarouselCardType
+            .HSCROLL_CARDS,
+      }),
+    }),
   );
 }
 
@@ -221,6 +623,96 @@ function validateMessagePayload(payload: any): void {
         throw new Error('"reaction.message_id" is required for type "reaction"');
       }
       return;
+    case 'poll':
+      if (!payload.poll?.name || !Array.isArray(payload.poll?.values)) {
+        throw new Error('"poll.name" and "poll.values" are required for type "poll"');
+      }
+      return;
+    case 'event':
+      if (!payload.event?.name || !payload.event?.start_date) {
+        throw new Error('"event.name" and "event.start_date" are required for type "event"');
+      }
+      return;
+    case 'view_once':
+      if (!payload.view_once?.type || !payload.view_once?.[payload.view_once.type]) {
+        throw new Error(
+          '"view_once.type" and matching media payload are required for type "view_once"',
+        );
+      }
+      if (!['image', 'video'].includes(payload.view_once.type)) {
+        throw new Error('"view_once.type" must be "image" or "video"');
+      }
+      if (
+        !payload.view_once[payload.view_once.type]?.link &&
+        !payload.view_once[payload.view_once.type]?.data
+      ) {
+        throw new Error('"view_once" media must include "link" or "data"');
+      }
+      if (payload.view_once[payload.view_once.type].link) {
+        assertSafeMediaUrl(payload.view_once[payload.view_once.type].link);
+      }
+      return;
+    case 'album':
+      if (!Array.isArray(payload.album?.media) || payload.album.media.length === 0) {
+        throw new Error('"album.media" is required for type "album"');
+      }
+      payload.album.media.forEach((mediaItem: any, index: number) => {
+        if (!['image', 'video'].includes(mediaItem?.type)) {
+          throw new Error(`"album.media[${index}].type" must be "image" or "video"`);
+        }
+        if (!mediaItem?.[mediaItem.type]?.link && !mediaItem?.[mediaItem.type]?.data) {
+          throw new Error(
+            `"album.media[${index}].${mediaItem.type}.link" or "data" is required`,
+          );
+        }
+        if (mediaItem[mediaItem.type].link) {
+          assertSafeMediaUrl(mediaItem[mediaItem.type].link);
+        }
+      });
+      return;
+    case 'edit':
+      if (!payload.edit?.message_id || !payload.edit?.text?.body) {
+        throw new Error(
+          '"edit.message_id" and "edit.text.body" are required for type "edit"',
+        );
+      }
+      return;
+    case 'delete':
+      if (!payload.delete?.message_id) {
+        throw new Error('"delete.message_id" is required for type "delete"');
+      }
+      return;
+    case 'presence':
+      if (!payload.presence?.state) {
+        throw new Error('"presence.state" is required for type "presence"');
+      }
+      return;
+    case 'request_phone_number':
+      return;
+    case 'pin':
+      if (!payload.pin?.message_id) {
+        throw new Error('"pin.message_id" is required for type "pin"');
+      }
+      return;
+    case 'forward':
+      if (!payload.forward?.message_id) {
+        throw new Error('"forward.message_id" is required for type "forward"');
+      }
+      return;
+    case 'disappearing':
+      return;
+    case 'limit_sharing':
+      return;
+    case 'raw_proto':
+      if (!payload.raw_proto?.message) {
+        throw new Error('"raw_proto.message" is required for type "raw_proto"');
+      }
+      return;
+    case 'group':
+      if (!payload.group?.action) {
+        throw new Error('"group.action" is required for type "group"');
+      }
+      return;
     case 'interactive':
       if (!payload.interactive?.action) {
         throw new Error('"interactive.action" is required for type "interactive"');
@@ -228,6 +720,27 @@ function validateMessagePayload(payload: any): void {
       if (!payload.interactive?.body?.text) {
         throw new Error('"interactive.body.text" is required for type "interactive"');
       }
+      return;
+    case 'product':
+      if (!payload.product?.title) {
+        throw new Error('"product.title" is required for type "product"');
+      }
+      if (!payload.product?.image?.link && !payload.product?.image?.data) {
+        throw new Error('"product.image.link" or "data" is required for type "product"');
+      }
+      if (payload.product.image.link) assertSafeMediaUrl(payload.product.image.link);
+      return;
+    case 'catalog_card':
+      if (!payload.catalog_card?.image?.link && !payload.catalog_card?.image?.data) {
+        throw new Error(
+          '"catalog_card.image.link" or "data" is required for type "catalog_card"',
+        );
+      }
+      if (payload.catalog_card.image.link) {
+        assertSafeMediaUrl(payload.catalog_card.image.link);
+      }
+      return;
+    case 'order':
       return;
     default:
       throw new Error(`Unsupported message type: "${payload.type}"`);
@@ -3453,11 +3966,17 @@ export class WhatsAppService extends EventEmitter {
         const mediaPayload = payload[payload.type];
         const mediaSource = resolveMediaSource(mediaPayload, payload.type);
         const isVoiceNote = payload.type === 'audio' && mediaPayload?.voice === true;
+        const isVideoNote = payload.type === 'video' && mediaPayload?.ptv === true;
+        const shouldPlayAsGif =
+          payload.type === 'video' &&
+          (mediaPayload?.gif === true || mediaPayload?.gifPlayback === true);
         messageContent = {
           [payload.type]: mediaSource,
           caption: mediaPayload?.caption,
           mimetype: mediaPayload?.mime_type ?? (isVoiceNote ? 'audio/ogg; codecs=opus' : undefined),
           ptt: isVoiceNote || undefined,
+          ptv: isVideoNote || undefined,
+          gifPlayback: shouldPlayAsGif || undefined,
         };
         break;
       }
@@ -3522,8 +4041,276 @@ export class WhatsAppService extends EventEmitter {
         };
         break;
       }
+      case 'poll': {
+        messageContent = {
+          poll: {
+            name: payload.poll.name,
+            values: payload.poll.values,
+            selectableCount: payload.poll.selectable_count ?? payload.poll.selectableCount ?? 1,
+            toAnnouncementGroup: payload.poll.to_announcement_group ?? false,
+          },
+        };
+        break;
+      }
+      case 'event': {
+        const eventPayload = payload.event;
+        messageContent = {
+          event: {
+            name: eventPayload.name,
+            description: eventPayload.description,
+            startDate: new Date(eventPayload.start_date),
+            endDate: eventPayload.end_date ? new Date(eventPayload.end_date) : undefined,
+            location: eventPayload.location
+              ? {
+                  degreesLatitude: Number(eventPayload.location.latitude),
+                  degreesLongitude: Number(eventPayload.location.longitude),
+                  name: eventPayload.location.name,
+                  address: eventPayload.location.address,
+                }
+              : undefined,
+            call: eventPayload.call,
+            isCancelled: eventPayload.is_cancelled,
+            isScheduleCall: eventPayload.is_schedule_call,
+            extraGuestsAllowed: eventPayload.extra_guests_allowed,
+          },
+        };
+        break;
+      }
+      case 'view_once': {
+        const viewOnceType = payload.view_once.type;
+        const viewOnceMedia = payload.view_once[viewOnceType];
+        messageContent = {
+          [viewOnceType]: resolveMediaSource(viewOnceMedia, viewOnceType),
+          caption: viewOnceMedia.caption,
+          mimetype: viewOnceMedia.mime_type,
+          viewOnce: true,
+        };
+        break;
+      }
+      case 'album': {
+        const albumMedia = payload.album.media;
+        const expectedImageCount = albumMedia.filter(
+          (mediaItem: any) => mediaItem.type === 'image',
+        ).length;
+        const expectedVideoCount = albumMedia.filter(
+          (mediaItem: any) => mediaItem.type === 'video',
+        ).length;
+        messageContent = {
+          album: {
+            expectedImageCount,
+            expectedVideoCount,
+          },
+        };
+        break;
+      }
+      case 'edit': {
+        const editedDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': payload.edit.message_id,
+        }).sort({ createdAt: -1 });
+        if (!editedDoc?.payload?.key) {
+          throw new Error(`Cannot edit: message ${payload.edit.message_id} not found`);
+        }
+        messageContent = {
+          text: payload.edit.text.body,
+          edit: editedDoc.payload.key,
+        };
+        break;
+      }
+      case 'delete': {
+        const deletedDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': payload.delete.message_id,
+        }).sort({ createdAt: -1 });
+        if (!deletedDoc?.payload?.key) {
+          throw new Error(`Cannot delete: message ${payload.delete.message_id} not found`);
+        }
+        messageContent = {
+          delete: deletedDoc.payload.key,
+        };
+        break;
+      }
+      case 'presence': {
+        const allowedPresenceStates = [
+          'unavailable',
+          'available',
+          'composing',
+          'recording',
+          'paused',
+        ];
+        if (!allowedPresenceStates.includes(payload.presence.state)) {
+          throw new Error(
+            `"presence.state" must be one of: ${allowedPresenceStates.join(', ')}`,
+          );
+        }
+        await sock.sendPresenceUpdate(payload.presence.state, to);
+        return {
+          key: {
+            id: `presence_${Date.now()}`,
+            remoteJid: to,
+          },
+          message: {
+            presence: payload.presence.state,
+          },
+        };
+      }
+      case 'request_phone_number': {
+        messageContent = {
+          requestPhoneNumber: true,
+        };
+        break;
+      }
+      case 'pin': {
+        const pinnedDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': payload.pin.message_id,
+        }).sort({ createdAt: -1 });
+        if (!pinnedDoc?.payload?.key) {
+          throw new Error(`Cannot pin: message ${payload.pin.message_id} not found`);
+        }
+        messageContent = {
+          pin: pinnedDoc.payload.key,
+          type: payload.pin.unpin ? 2 : 1,
+          time: payload.pin.time ?? 86400,
+        };
+        break;
+      }
+      case 'forward': {
+        const forwardedDoc = await WhatsAppEvents.findOne({
+          channelId,
+          'payload.key.id': payload.forward.message_id,
+        }).sort({ createdAt: -1 });
+        if (!forwardedDoc?.payload) {
+          throw new Error(`Cannot forward: message ${payload.forward.message_id} not found`);
+        }
+        messageContent = {
+          forward: forwardedDoc.payload,
+          force: payload.forward.force ?? true,
+        };
+        break;
+      }
+      case 'disappearing': {
+        messageContent = {
+          disappearingMessagesInChat:
+            payload.disappearing?.seconds ?? payload.disappearing?.enabled ?? true,
+        };
+        break;
+      }
+      case 'limit_sharing': {
+        messageContent = {
+          limitSharing: payload.limit_sharing?.enabled ?? true,
+        };
+        break;
+      }
+      case 'raw_proto': {
+        messageContent = proto.Message.fromObject(payload.raw_proto.message);
+        break;
+      }
+      case 'group': {
+        const groupPayload = payload.group;
+        switch (groupPayload.action) {
+          case 'create': {
+            const participants = (groupPayload.participants ?? [to]).map(formatJid);
+            const group = await sock.groupCreate(
+              groupPayload.subject ?? `Legimus prueba ${new Date().toISOString()}`,
+              participants,
+            );
+            const groupMessage = await sock.sendMessage(group.id, {
+              text: groupPayload.text ?? 'Grupo de prueba creado desde Baileys.',
+              mentions: participants,
+            });
+            return {
+              ...groupMessage,
+              group,
+            };
+          }
+          case 'invite': {
+            if (!groupPayload.jid) {
+              throw new Error('"group.jid" is required for group invite');
+            }
+            const groupJid = formatJid(groupPayload.jid);
+            const inviteCode = await sock.groupInviteCode(groupJid);
+            const metadata = await sock.groupMetadata(groupJid);
+            messageContent = {
+              groupInvite: {
+                inviteCode,
+                inviteExpiration: 0,
+                text: groupPayload.text ?? `Invitación a ${metadata.subject}`,
+                jid: groupJid,
+                subject: metadata.subject,
+              },
+            };
+            break;
+          }
+          case 'mention': {
+            if (!groupPayload.jid) {
+              throw new Error('"group.jid" is required for group mention');
+            }
+            return await sock.sendMessage(formatJid(groupPayload.jid), {
+              text: groupPayload.text ?? '@user prueba de mención desde Baileys',
+              mentions: (groupPayload.mentions ?? [to]).map(formatJid),
+            });
+          }
+          case 'participants': {
+            if (!groupPayload.jid || !Array.isArray(groupPayload.participants)) {
+              throw new Error(
+                '"group.jid" and "group.participants" are required for participants action',
+              );
+            }
+            await sock.groupParticipantsUpdate(
+              formatJid(groupPayload.jid),
+              groupPayload.participants.map(formatJid),
+              groupPayload.operation ?? 'add',
+            );
+            return {
+              key: {
+                id: `group_participants_${Date.now()}`,
+                remoteJid: formatJid(groupPayload.jid),
+              },
+              message: {
+                group: {
+                  action: 'participants',
+                  operation: groupPayload.operation ?? 'add',
+                },
+              },
+            };
+          }
+          default:
+            throw new Error(`Unsupported group action "${groupPayload.action}"`);
+        }
+        break;
+      }
       case 'interactive': {
-        messageContent = buildInteractiveContent(payload.interactive);
+        if (payload.interactive?.type === 'carousel') {
+          messageContent = await buildCarouselInteractiveContent(
+            payload.interactive,
+            sock,
+          );
+        } else if (
+          ['button', 'list', 'native_flow', 'flow'].includes(payload.interactive?.type)
+        ) {
+          messageContent = buildNativeInteractiveContent(payload.interactive);
+        } else {
+          throw new Error(
+            `Unsupported interactive type "${payload.interactive?.type}". Use "button", "list", "native_flow", "flow", or "carousel".`,
+          );
+        }
+        break;
+      }
+      case 'product': {
+        messageContent = buildProductContent(payload.product, sock.user?.id ?? to);
+        break;
+      }
+      case 'catalog_card': {
+        messageContent = await buildCatalogCardContent(
+          payload.catalog_card,
+          sock,
+          sock.user?.id ?? to,
+        );
+        break;
+      }
+      case 'order': {
+        messageContent = buildOrderContent(payload.order ?? {}, sock.user?.id ?? to);
         break;
       }
       default:
@@ -3569,13 +4356,46 @@ export class WhatsAppService extends EventEmitter {
       let message;
 
       // Send message with quoted reply if context is provided
-      if (quotedMessage) {
+      if (
+        (payload.type === 'interactive' &&
+          ['button', 'list', 'native_flow', 'flow', 'carousel'].includes(
+            payload.interactive?.type,
+          )) ||
+        ['catalog_card', 'order', 'raw_proto'].includes(payload.type)
+      ) {
+        if (quotedMessage) {
+          throw new Error('Raw proto replies with quoted context are not supported');
+        }
+        message = generateWAMessageFromContent(to, messageContent, {
+          userJid: sock.user?.id,
+        });
+        const additionalNodes =
+          payload.type !== 'interactive' || payload.interactive?.type === 'carousel'
+            ? []
+            : buildNativeFlowRelayNodes(message.message, to);
+        await sock.relayMessage(to, message.message, {
+          messageId: message.key.id,
+          additionalNodes,
+        });
+      } else if (quotedMessage) {
         console.log(
           `📝 Sending reply to message: ${payload.context.message_id}`,
         );
         message = await sock.sendMessage(to, messageContent, {
           quoted: quotedMessage,
         });
+      } else if (payload.type === 'album') {
+        message = await sock.sendMessage(to, messageContent);
+        for (const mediaItem of payload.album.media) {
+          const mediaPayload = mediaItem[mediaItem.type];
+          const albumChildMessage: any = {
+            [mediaItem.type]: resolveMediaSource(mediaPayload, mediaItem.type),
+            caption: mediaPayload.caption,
+            mimetype: mediaPayload.mime_type,
+            albumParentKey: message.key,
+          };
+          await sock.sendMessage(to, albumChildMessage);
+        }
       } else {
         message = await sock.sendMessage(to, messageContent);
       }

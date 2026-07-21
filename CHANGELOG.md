@@ -1,5 +1,6 @@
 ## Unreleased (May 23, 2026)
 
+*   **WhatsApp Baileys capability map (June 17, 2026)** — documents verified native WhatsApp surfaces from the Beelink experiments: native-flow buttons/carousels, commerce cards, order/cart cards, polls, events, payments, newsletter invites, PTV/video notes, GIF playback, Status limitations, Channels guidance, and raw proto failure modes.
 *   **Baileys upgraded 7.0.0-rc.9 → 7.0.0-rc13** — fixes random `401 loggedOut` loop introduced by 5-month gap in WA protocol changes. Drop-in upgrade, zero code changes required.
 *   **Alert delivery refactor** — WhatsApp health alerts now route through Telegram Ghost (Saved Messages) by default; WhatsApp delivery is opt-in via `ALERT_ENABLE_WHATSAPP=true` to avoid self-defeat (sending "WA is down" alerts via WA itself). CallMeBot demoted to opt-in (`ALERT_ENABLE_CALLMEBOT=true`).
 *   **Status code mapping fixed** — `formatStatusToWebhookPayload` was mapping `0` (ERROR) and `1` (PENDING) both to `'sent'`, masking real failures. Now uses the canonical `WAProto.WebMessageInfo.Status` enum: `failed`, `pending`, `sent`, `delivered`, `read`, `played`. New typed webhook event names (`message.failed`, `message.pending`, `message.played`) join the existing `message.sent` / `message.delivered` / `message.read`. See `WHATSAPP_INTEGRATION.md` for the full table.
