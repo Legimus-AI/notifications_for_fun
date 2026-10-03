@@ -39,6 +39,20 @@ async function main(): Promise<void> {
     abuseKind('POST', '/api/telegram_ghost_caller/channels') === null,
     'create channel is not a send',
   );
+  assert(abuseKind('POST', '/api/notifications/send') === 'message', 'notifications send');
+  assert(
+    abuseKind('POST', '/api/notifications/send-multi/') === 'message',
+    'send-multi slash',
+  );
+  assert(
+    abuseKind('POST', '/API/WhatsApp/channels/c/Status') === 'message',
+    'case and status',
+  );
+  assert(
+    abuseKind('POST', '/api/slack/channels/c/send-message') === 'message',
+    'slack send',
+  );
+  assert(abuseKind('POST', '/API/telegram_phones/c/CALL/') === 'call', 'call case slash');
 
   const alerts: string[] = [];
   setAbuseAlerter(async (message) => {
