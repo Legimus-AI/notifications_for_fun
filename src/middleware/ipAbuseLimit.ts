@@ -11,7 +11,7 @@ const MESSAGE_LIMIT = 60;
 const CALL_LIMIT = 30;
 
 const MESSAGE_PATH =
-  /^\/api\/(?:whatsapp\/channels\/[^/]+\/(?:messages|send|send-media)|telegram\/channels\/[^/]+\/(?:messages|send-message)|telegram_phones\/[^/]+\/send|telegram_ghost_caller\/[^/]+\/send)$/;
+  /^\/api\/(?:whatsapp\/channels\/[^/]+\/(?:messages|send|send-media|status)|telegram\/channels\/[^/]+\/(?:messages|send-message)|telegram_phones\/[^/]+\/send|telegram_ghost_caller\/[^/]+\/send|slack\/channels\/[^/]+\/send-message|notifications\/send(?:-multi)?)$/;
 const CALL_PATH =
   /^\/api\/(?:telegram_ghost_caller\/[^/]+\/(?:call|alert)|telegram_phones\/[^/]+\/(?:call|call-request))$/;
 
@@ -36,7 +36,7 @@ export function resetIpAbuseLimit(): void {
 
 export function abuseKind(method: string, path: string): Kind | null {
   if (method !== 'POST') return null;
-  const bare = path.split('?')[0];
+  const bare = path.split('?')[0].toLowerCase().replace(/\/+$/, '') || '/';
   if (CALL_PATH.test(bare)) return 'call';
   if (MESSAGE_PATH.test(bare)) return 'message';
   return null;
