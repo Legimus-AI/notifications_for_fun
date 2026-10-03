@@ -24,6 +24,7 @@ import {
   stopWhatsAppHealthCheck,
 } from './cronjobs/WhatsAppHealthCheckCron';
 import { healthCheckService } from './services/HealthCheckService';
+import { ipAbuseLimit } from './middleware/ipAbuseLimit';
 
 
 // =================================================================
@@ -141,6 +142,9 @@ app.get('/health', async (req: express.Request, res: express.Response) => {
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
+
+// Before the JSON parser so a blocked IP does not pay to read the body.
+app.use(ipAbuseLimit);
 
 // For parsing json
 app.use(express.json({ limit: '100mb' }));
