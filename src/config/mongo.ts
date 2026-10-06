@@ -1,4 +1,6 @@
 const DB_URL = process.env.MONGO_URI;
+// WHY: pause between failed initial connects so a down DB at boot is not hammered.
+const INITIAL_CONNECT_RETRY_MS = 5_000;
 
 import mongoose from 'mongoose';
 import loadModels from '../models';
@@ -31,12 +33,14 @@ export default () => {
         console.log(
           `*    Error connecting to DB: ${err}\n****************************\n`,
         );
+        setTimeout(connect, INITIAL_CONNECT_RETRY_MS);
       });
   };
   connect();
 
+  // WHY: never call connect() on 'disconnected' — the driver already reconnects,
+  // and each extra connect() opens a new pool without closing the old one.
   mongoose.connection.on('error', console.log);
-  mongoose.connection.on('disconnected', connect);
 
   loadModels();
 };
