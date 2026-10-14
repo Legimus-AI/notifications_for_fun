@@ -16,6 +16,7 @@ router.post(
 );
 router.get('/channels/:channelId/status', whatsAppController.getChannelStatus);
 router.get('/channels/:channelId/events', whatsAppController.getChannelEvents);
+router.put('/channels/:channelId/profile', whatsAppController.updateProfile);
 router.delete('/channels/:channelId', whatsAppController.deleteChannel);
 
 //

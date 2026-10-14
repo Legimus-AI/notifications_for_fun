@@ -26,6 +26,8 @@ async function main(): Promise<void> {
     abuseKind('POST', '/api/whatsapp/channels/c/messages') === 'message',
     'wa messages',
   );
+  assert(abuseKind('PUT', '/api/whatsapp/channels/c/profile') === 'message', 'wa profile');
+  assert(abuseKind('PUT', '/api/whatsapp/channels/c/webhooks/w') === null, 'other put ignored');
   assert(
     abuseKind('POST', '/api/telegram/channels/c/send-message') === 'message',
     'tg send-message',
