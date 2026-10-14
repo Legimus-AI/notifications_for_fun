@@ -9,8 +9,13 @@ export class SocketService {
   constructor(httpServer: HTTPServer) {
     this.io = new SocketIOServer(httpServer, {
       cors: {
-        origin: process.env.NODE_ENV === 'production' 
-          ? (process.env.FRONTEND_DOMAIN || 'http://localhost:3030')
+        // WHY: both panels served from the Beelink: notifications.legimus.me (Julian Cuero) and notifications2.legimus.ai.
+        origin: process.env.NODE_ENV === 'production'
+          ? [
+              process.env.FRONTEND_DOMAIN || 'http://localhost:3030',
+              'https://notifications.legimus.me',
+              'https://notifications2.legimus.ai',
+            ]
           : '*', // Allow all origins in development
         methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
         credentials: true,
