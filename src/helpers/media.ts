@@ -7,6 +7,8 @@
  * `Blob` for multipart upload). This module only holds the bits that
  * are byte-for-byte identical across channels.
  */
+import axios from 'axios';
+import sharp from 'sharp';
 
 /**
  * Hard cap on decoded base64 media payload size.
@@ -121,4 +123,48 @@ export function assertSafeMediaUrl(rawUrl: unknown): string {
     throw new MediaPayloadError(`"link" host "${host}" is in a reserved range`);
   }
   return parsed.toString();
+}
+
+/** Side of the square JPEG uploaded as a WhatsApp profile picture (Baileys' default). */
+export const PROFILE_PICTURE_SIZE = 640;
+
+/**
+ * Load a `{link}` (SSRF-checked URL) or `{data}` (base64) media payload into a Buffer,
+ * enforcing the same size cap for both.
+ */
+export async function loadMediaBuffer(mediaPayload: unknown): Promise<Buffer> {
+  const { link, data } = (mediaPayload ?? {}) as { link?: unknown; data?: unknown };
+  if (!link) {
+    if (data) return decodeBase64Payload(data);
+    throw new MediaPayloadError('"image.link" or "image.data" (base64) is required');
+  }
+  const url = assertSafeMediaUrl(link);
+  try {
+    const response = await axios.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      maxContentLength: MAX_DECODED_MEDIA_BYTES,
+      // WHY: we fetch in-process, so every redirect hop must pass the same SSRF check.
+      beforeRedirect: (options) => {
+        assertSafeMediaUrl(options.href);
+      },
+    });
+    return Buffer.from(response.data);
+  } catch (error) {
+    throw new MediaPayloadError(`"image.link" could not be downloaded: ${(error as Error).message}`);
+  }
+}
+
+/** Centre-crop any image to a square JPEG so WhatsApp's circular avatar shows its middle. */
+export async function toSquareProfileImage(image: Buffer): Promise<Buffer> {
+  try {
+    return await sharp(image)
+      .rotate() // honour EXIF orientation from phone photos
+      .resize(PROFILE_PICTURE_SIZE, PROFILE_PICTURE_SIZE, { fit: 'cover', position: 'centre' })
+      .flatten({ background: '#ffffff' }) // JPEG has no alpha: transparent logos would turn black
+      .jpeg({ quality: 100 }) // Baileys re-encodes at its own quality; avoid a second lossy pass
+      .toBuffer();
+  } catch (error) {
+    throw new MediaPayloadError(`"image" is not a readable image: ${(error as Error).message}`);
+  }
 }

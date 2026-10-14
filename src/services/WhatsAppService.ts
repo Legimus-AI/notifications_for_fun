@@ -33,7 +33,13 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { removeSuffixFromJid, formatJid } from '../helpers/utils';
-import { decodeBase64Payload, assertSafeMediaUrl } from '../helpers/media';
+import {
+  decodeBase64Payload,
+  assertSafeMediaUrl,
+  loadMediaBuffer,
+  toSquareProfileImage,
+  MediaPayloadError,
+} from '../helpers/media';
 import {
   AUTH_RETRY_PAUSED_STATUS,
   getWhatsAppCredentialsRegisteredAfterPause,
@@ -4490,6 +4496,25 @@ export class WhatsAppService extends EventEmitter {
       // This can fail if the user has no profile picture or due to privacy settings
       return undefined;
     }
+  }
+
+  /**
+   * Updates this channel's own WhatsApp profile name and/or picture.
+   * The image is downloaded and squared BEFORE any change so a bad image never leaves a half-applied profile.
+   */
+  async updateOwnProfile(
+    channelId: string,
+    profile: { name?: string; image?: unknown },
+  ): Promise<void> {
+    const sock = this.connections.get(channelId);
+    if (!sock?.user) {
+      throw new MediaPayloadError('CHANNEL_NOT_ACTIVE', 400);
+    }
+    const picture = profile.image
+      ? await toSquareProfileImage(await loadMediaBuffer(profile.image))
+      : undefined;
+    if (picture) await sock.updateProfilePicture(sock.user.id, picture);
+    if (profile.name) await sock.updateProfileName(profile.name);
   }
 
   /**

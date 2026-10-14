@@ -172,6 +172,37 @@ Content-Type: application/json
 }
 ```
 
+### 9. Update Channel Profile (name / photo)
+
+Changes the connected WhatsApp account's own profile name and/or picture. Send at least one field.
+
+```http
+PUT /api/whatsapp/channels/{channelId}/profile
+Content-Type: application/json
+
+{
+  "name": "Legimus Alerts",
+  "image": { "link": "https://example.com/logo.png" }
+}
+```
+
+- `name` (optional): 1–25 characters (WhatsApp's limit), trimmed. Also updates the channel's `name` in MongoDB.
+- `image` (optional): same shape as media, `{ "link": "<public URL>" }` or `{ "data": "<base64 or data: URL>" }` (max 16 MiB; `link` wins if both are sent).
+  It is centre-cropped to a 640×640 JPEG (transparency becomes white) before upload, so the middle of the image is what shows in the circular avatar.
+
+Responses:
+
+| Status | `errors.msg` / payload | When |
+|---|---|---|
+| 200 | `{ ok: true, payload: { channelId, name, imageUpdated } }` | Profile updated |
+| 400 | `NAME_OR_IMAGE_REQUIRED`, `NAME_MUST_BE_1_TO_25_CHARS`, `IMAGE_LINK_OR_DATA_REQUIRED`, or an image error | Invalid body, image link that cannot be downloaded, or unreadable image |
+| 404 | `CHANNEL_NOT_FOUND` | Unknown `channelId` |
+| 400 | `CHANNEL_NOT_ACTIVE` | The channel is not connected to WhatsApp |
+| 429 | rate limited | Same per-IP cap as the send routes |
+| 500 | WhatsApp error | The picture is applied before the name, so it may already be updated if the name step failed |
+
+The image is downloaded and processed before anything is sent to WhatsApp, so a bad image leaves the profile untouched.
+
 ## Socket.io Real-time Events
 
 ### Client Connection
@@ -475,7 +506,8 @@ changes):
 ## Environment Variables
 
 ```env
-# Frontend URL for Socket.io CORS
+# Frontend URL for Socket.io CORS. In production Socket.io also accepts
+# https://notifications.legimus.me and https://notifications2.legimus.ai.
 FRONTEND_DOMAIN=http://localhost:3000
 
 # MongoDB connection (already configured)

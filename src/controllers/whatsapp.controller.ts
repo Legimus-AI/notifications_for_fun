@@ -746,6 +746,49 @@ class WhatsAppController {
   };
 
   /**
+   * Updates the channel's own WhatsApp profile name and/or picture (`image` = `{link}` or `{data}` like media).
+   */
+  public updateProfile = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { channelId } = req.params;
+      const { image } = req.body;
+      const name = typeof req.body.name === 'string' ? req.body.name.trim() : req.body.name;
+
+      if (name === undefined && image === undefined) {
+        return handleError(res, utils.buildErrObject(400, 'NAME_OR_IMAGE_REQUIRED'));
+      }
+      // WHY: 25 chars is the WhatsApp app's own limit for profile names.
+      if (name !== undefined && (typeof name !== 'string' || !name || name.length > 25)) {
+        return handleError(res, utils.buildErrObject(400, 'NAME_MUST_BE_1_TO_25_CHARS'));
+      }
+      if (image !== undefined && (typeof image !== 'object' || (!image?.link && !image?.data))) {
+        return handleError(res, utils.buildErrObject(400, 'IMAGE_LINK_OR_DATA_REQUIRED'));
+      }
+
+      const channel = await Channel.findOne({ channelId });
+      if (!channel) {
+        return handleError(res, utils.buildErrObject(404, 'CHANNEL_NOT_FOUND'));
+      }
+      if (whatsAppService.getChannelStatus(channelId) !== 'active') {
+        return handleError(res, utils.buildErrObject(400, 'CHANNEL_NOT_ACTIVE'));
+      }
+
+      await whatsAppService.updateOwnProfile(channelId, { name, image });
+      if (name) {
+        channel.name = name;
+        await channel.save();
+      }
+
+      res.status(200).json({
+        ok: true,
+        payload: { channelId, name: channel.name, imageUpdated: Boolean(image) },
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  };
+
+  /**
    * Fetches the profile picture of a WhatsApp contact.
    */
   public getProfilePicture = async (req: Request, res: Response) => {

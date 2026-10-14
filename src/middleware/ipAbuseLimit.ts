@@ -12,6 +12,8 @@ const CALL_LIMIT = 30;
 
 const MESSAGE_PATH =
   /^\/api\/(?:whatsapp\/channels\/[^/]+\/(?:messages|send|send-media|status)|telegram\/channels\/[^/]+\/(?:messages|send-message)|telegram_phones\/[^/]+\/send|telegram_ghost_caller\/[^/]+\/send|slack\/channels\/[^/]+\/send-message|notifications\/send(?:-multi)?)$/;
+// WHY: profile edits rewrite the account every alert goes out from; repeated changes are a ban signal.
+const PROFILE_PATH = /^\/api\/whatsapp\/channels\/[^/]+\/profile$/;
 const CALL_PATH =
   /^\/api\/(?:telegram_ghost_caller\/[^/]+\/(?:call|alert)|telegram_phones\/[^/]+\/(?:call|call-request))$/;
 
@@ -35,8 +37,9 @@ export function resetIpAbuseLimit(): void {
 }
 
 export function abuseKind(method: string, path: string): Kind | null {
-  if (method !== 'POST') return null;
   const bare = path.split('?')[0].toLowerCase().replace(/\/+$/, '') || '/';
+  if (method === 'PUT' && PROFILE_PATH.test(bare)) return 'message';
+  if (method !== 'POST') return null;
   if (CALL_PATH.test(bare)) return 'call';
   if (MESSAGE_PATH.test(bare)) return 'message';
   return null;

@@ -82,6 +82,7 @@
     "passport-jwt": "^4.0.1",
     "qrcode": "^1.5.4",
     "request-ip": "^3.3.0",
+    "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "telegram": "^2.26.22",
     "trim-request": "^1.0.6",
