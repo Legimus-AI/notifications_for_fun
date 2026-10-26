@@ -1522,9 +1522,13 @@ export class WhatsAppService extends EventEmitter {
       this.emit('qr', channelId, qrDataURL);
     }
 
-    if (connection === 'connecting' && phoneNumber) {
+    // WHY qr (not 'connecting'): requestPairingCode sets creds.me immediately, so
+    // calling it before the registration handshake makes the socket log in with
+    // a phantom `me` → 401 loggedOut + "Connection Closed" and no code ever
+    // issues. A qr event proves the handshake finished and the ws is open.
+    if (qr && phoneNumber) {
       const sock = eventSock ?? this.connections.get(channelId);
-      if (sock && !sock.authState.creds.registered) {
+      if (sock && !sock.authState.creds.registered && !sock.authState.creds.me) {
         if (!allowPairing) {
           // WHY: auto-reconnects must NEVER request a pairing code — creds can
           // read as unregistered mid-rotation, and the resulting pairing-mode
@@ -1537,6 +1541,7 @@ export class WhatsAppService extends EventEmitter {
           try {
             const code = await sock.requestPairingCode(phoneNumber);
             await this.updateChannelStatus(channelId, 'pairing_code_ready');
+            await this.updateChannelConfig(channelId, { pairingCode: code });
             this.emit('pairing-code', channelId, code);
           } catch (error) {
             console.error(
