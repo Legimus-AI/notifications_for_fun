@@ -44,6 +44,7 @@ import {
   AUTH_RETRY_PAUSED_STATUS,
   getWhatsAppCredentialsRegisteredAfterPause,
   hasExplicitWhatsAppSessionRevocation,
+  isRecoverableWhatsAppStreamError,
   shouldPauseAmbiguousWhatsAppAuthRetry,
 } from '../helpers/whatsappDisconnect';
 import {
@@ -1557,9 +1558,11 @@ export class WhatsAppService extends EventEmitter {
               disconnectStatusCode as DisconnectReason
             ] ?? `unknown(${disconnectStatusCode})`)
           : 'no_error_object';
+      // WHY: .message first — Boom replaces a 500's payload message with a
+      // generic "An internal server error occurred" (4xx payloads match .message).
       const disconnectMessage =
-        disconnectError?.output?.payload?.message ??
         disconnectError?.message ??
+        disconnectError?.output?.payload?.message ??
         'n/a';
       console.log(
         `📴 ${channelId} disconnect | statusCode=${disconnectStatusCode} reason=${disconnectReasonName} message="${disconnectMessage}"`,
@@ -1609,9 +1612,9 @@ export class WhatsAppService extends EventEmitter {
       // T3: classify the close into one of three buckets so we stop treating
       // every 401 as terminal. A 401 with a `conflict`/`replaced` message means
       // another device picked up the session (or our own previous OOM-restart
-      // left a ghost slot) — creds are still valid, retry with backoff. Only
-      // device_removed / forbidden / badSession / a plain 401 are truly
-      // terminal (need QR re-pair).
+      // left a ghost slot) — creds are still valid, retry with backoff. A 500
+      // stream error rides the same backoff. Only device_removed / forbidden /
+      // a 500 <failure> / a plain 401 are truly terminal (need QR re-pair).
       const normalizedDisconnectMessage = (
         disconnectMessage || ''
       ).toLowerCase();
@@ -1660,7 +1663,12 @@ export class WhatsAppService extends EventEmitter {
         return;
       }
 
+      const isRecoverableStreamError = isRecoverableWhatsAppStreamError(
+        disconnectStatusCode === DisconnectReason.badSession,
+        disconnectMessage,
+      );
       const isConflict =
+        isRecoverableStreamError ||
         disconnectStatusCode === DisconnectReason.connectionReplaced ||
         (disconnectStatusCode === DisconnectReason.loggedOut &&
           /(conflict|replaced|connection failure)/.test(
@@ -1670,7 +1678,8 @@ export class WhatsAppService extends EventEmitter {
       const isTerminal =
         /device_removed/.test(normalizedDisconnectMessage) ||
         disconnectStatusCode === 403 ||
-        disconnectStatusCode === DisconnectReason.badSession ||
+        (disconnectStatusCode === DisconnectReason.badSession &&
+          !isRecoverableStreamError) ||
         (disconnectStatusCode === DisconnectReason.loggedOut && !isConflict);
 
       const fireTerminalDisconnectedWebhook = async () => {
@@ -1864,8 +1873,11 @@ export class WhatsAppService extends EventEmitter {
           if (!this.conflictAlerted.has(channelId)) {
             this.conflictAlerted.add(channelId);
             console.warn(
-              `⚠️ ${channelId} persistent conflict — another device holds the session. ` +
-                `Steady retry every ${CONFLICT_COOLDOWN_MS}ms (no QR; creds valid). Check Linked Devices.`,
+              isRecoverableStreamError
+                ? `⚠️ ${channelId} persistent stream error (${disconnectMessage}) — ` +
+                    `steady retry every ${CONFLICT_COOLDOWN_MS}ms (no QR; creds valid).`
+                : `⚠️ ${channelId} persistent conflict — another device holds the session. ` +
+                    `Steady retry every ${CONFLICT_COOLDOWN_MS}ms (no QR; creds valid). Check Linked Devices.`,
             );
             channelMetrics.record(channelId, 'conflict', {
               statusCode: disconnectStatusCode ?? null,
@@ -1883,7 +1895,7 @@ export class WhatsAppService extends EventEmitter {
           const delay =
             CONFLICT_BACKOFF_MS[Math.min(attempt, CONFLICT_BACKOFF_MS.length - 1)];
           console.log(
-            `🔁 ${channelId} conflict recoverable, attempt ${next}/${MAX_CONFLICT_RECONNECTS} in ${delay}ms`,
+            `🔁 ${channelId} ${isRecoverableStreamError ? 'stream error' : 'conflict'} recoverable, attempt ${next}/${MAX_CONFLICT_RECONNECTS} in ${delay}ms`,
           );
           channelMetrics.record(channelId, 'conflict', {
             statusCode: disconnectStatusCode ?? null,

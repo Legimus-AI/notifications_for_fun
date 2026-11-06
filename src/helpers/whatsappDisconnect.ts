@@ -9,6 +9,15 @@ export const hasExplicitWhatsAppSessionRevocation = (
   );
 };
 
+/** Detects a code-less <stream:error> that Baileys maps to 500 badSession; creds stay valid. */
+export const isRecoverableWhatsAppStreamError = (
+  isBadSessionDisconnect: boolean,
+  baileysErrorMessage: string | undefined,
+): boolean =>
+  // WHY: a 500 <failure> ("Connection Failure") may be a real logout; only
+  // stream errors (e.g. an ack the server never got) reconnect with the same creds.
+  isBadSessionDisconnect && /^stream errored/i.test(baileysErrorMessage ?? '');
+
 export const AUTH_RETRY_PAUSED_STATUS = 'auth_retry_paused';
 
 /** Detects an ambiguous 401 that must pause instead of retrying or logging out. */

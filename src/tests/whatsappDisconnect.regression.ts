@@ -4,6 +4,7 @@ import {
   getMissingWhatsAppConnectionReason,
   getWhatsAppCredentialsRegisteredAfterPause,
   hasExplicitWhatsAppSessionRevocation,
+  isRecoverableWhatsAppStreamError,
   shouldPauseAmbiguousWhatsAppAuthRetry,
 } from '../helpers/whatsappDisconnect';
 import { UNHEALABLE_REASONS } from '../config/healthCheck.config';
@@ -85,6 +86,21 @@ assert.strictEqual(
   getMissingWhatsAppConnectionReason('connecting'),
   'no_connection',
   'other missing connections remain eligible for normal health handling',
+);
+assert.strictEqual(
+  isRecoverableWhatsAppStreamError(true, 'Stream Errored (ack)'),
+  true,
+  'a 500 <stream:error> (unacked <status>, 2026-11-06) must reconnect, not park',
+);
+assert.strictEqual(
+  isRecoverableWhatsAppStreamError(true, 'Connection Failure'),
+  false,
+  'a 500 <failure> may be a real logout and must stay terminal',
+);
+assert.strictEqual(
+  isRecoverableWhatsAppStreamError(false, 'Stream Errored (unknown)'),
+  false,
+  'only a 500 stream error is recoverable; a 401 stream error keeps its own path',
 );
 assert.ok(
   UNHEALABLE_REASONS.includes('status_auth_retry_paused'),

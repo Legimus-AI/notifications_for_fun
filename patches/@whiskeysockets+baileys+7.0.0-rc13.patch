@@ -37,7 +37,7 @@ index c99bdf5..46099d3 100644
          });
          this.inflightLIDLookups = new Map();
 diff --git a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
-index f2003ac..e3bad82 100644
+index f2003ac..f0d854b 100644
 --- a/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
 +++ b/node_modules/@whiskeysockets/baileys/lib/Socket/messages-recv.js
 @@ -880,9 +880,18 @@ export const makeMessagesRecvSocket = (config) => {
@@ -62,6 +62,37 @@ index f2003ac..e3bad82 100644
                  const codePairingPublicKey = await decipherLinkPublicKey(primaryEphemeralPublicKeyWrapped);
                  const companionSharedKey = Curve.sharedKey(authState.creds.pairingEphemeralKeyPair.private, codePairingPublicKey);
                  const random = randomBytes(32);
+@@ -1576,11 +1585,18 @@ export const makeMessagesRecvSocket = (config) => {
+             return exec(node, false).catch(err => onUnexpectedError(err, identifier));
+         }
+     };
++    // Some accounts now get contacts' statuses as a top-level <status> stanza
++    // instead of <message from="status@broadcast">. It isn't decoded here, but it
++    // must be acked: otherwise the server ends the stream ~50 minutes later with
++    // <stream:error><ack class="status"/></stream:error> and redelivers it on
++    // reconnect (upstream WhiskeySockets/Baileys#2858, ported from PR #2883).
++    const handleStatus = (node) => sendMessageAck(node);
+     const offlineNodeProcessor = makeOfflineNodeProcessor(new Map([
+         ['message', handleMessage],
+         ['call', handleCall],
+         ['receipt', handleReceipt],
+-        ['notification', handleNotification]
++        ['notification', handleNotification],
++        ['status', handleStatus]
+     ]), {
+         isWsOpen: () => ws.isOpen,
+         onUnexpectedError,
+@@ -1621,6 +1637,10 @@ export const makeMessagesRecvSocket = (config) => {
+     ws.on('CB:notification', async (node) => {
+         await processNode('notification', node, 'handling notification', handleNotification);
+     });
++    ws.on('CB:status', (node) => {
++        // .catch: processNode acks ignored JIDs itself, outside its own error guard
++        processNode('status', node, 'acking status stanza', handleStatus).catch(error => onUnexpectedError(error, 'acking status stanza'));
++    });
+     ws.on('CB:ack,class:message', (node) => {
+         handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'));
+     });
 diff --git a/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js b/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js
 index 24a3583..6e38b3e 100644
 --- a/node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js

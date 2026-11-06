@@ -42,6 +42,7 @@ El código mete **todos** los 401 en `logged_out` permanente — pero Baileys di
    - `428/408/503/515` → recuperable, reconnect con **backoff exponencial + jitter**.
    - `401` con message `conflict`/`replaced`/`Connection Failure` + auth presente → **`conflict_recoverable`**: cooldown 60-120s, **NO** borrar creds, **NO** QR, **NO** webhook terminal en el primer evento; cap de reintentos (p.ej. 5) y recién ahí `logged_out`.
    - `401 device_removed` / `403` / `411` / badSession persistente → terminal `logged_out` (QR manual).
+     *(2026-11-06: el badSession de un `stream:error` sin código —p.ej. el ack de `<status>` que faltaba— reintenta con el backoff de conflict; el 500 de `<failure>` sigue terminal. Ver CHANGELOG.)*
    - Nueva razón `status_conflict_recoverable` (distinta de `status_logged_out` que sigue siendo unhealable).
 5. **Anti-fuga / anti-conflict**: antes de reconectar, `await sock.end()` del socket viejo + **mutex por channelId** durante connect/reconnect + registro runtime `phoneJid → channelId` (si aparece otro canal con el mismo `sock.user.id`, no levantar el segundo). Esto corta la tormenta y la fuga de memoria a la vez.
 
@@ -173,8 +174,10 @@ Dejar SIEMPRE solo una línea estructurada: `channelId event messageId from stat
   const isTerminal =
     /device_removed/.test(msg) ||
     disconnectStatusCode === 403 ||                                    // forbidden
-    disconnectStatusCode === DisconnectReason.badSession ||            // 500
+    disconnectStatusCode === DisconnectReason.badSession ||            // 500 (obsoleto: ver nota)
     (disconnectStatusCode === DisconnectReason.loggedOut && !isConflict);
+  // Nota 2026-11-06: un 500 de <stream:error> ya no es terminal
+  // (isRecoverableWhatsAppStreamError → backoff de conflict); solo el 500 de <failure>.
 
   if (isTerminal) {
     // marca logged_out + webhook (lógica actual del else), reset attempts
